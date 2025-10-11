@@ -1,0 +1,52 @@
+[package]
+name = "bsc_streamer"
+version = "1.0.0"
+edition = "2021"
+authors = ["Your Name"]
+description = "Real-time BSC token swap event streamer with Four.meme bonding curve support"
+license = "MIT"
+repository = "https://github.com/yourusername/bsc_streamer"
+keywords = ["bsc", "defi", "trading", "blockchain", "web3"]
+categories = ["cryptocurrency", "web-programming"]
+
+[lib]
+name = "bsc_streamer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bsc_streamer"
+path = "src/main.rs"
+
+[dependencies]
+# Web3/Ethereum
+ethers = { version = "2.0", features = ["ws", "rustls", "abigen"] }
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Configuration
+dotenv = "0.15"
+
+# CLI/Display
+colored = "2.1"
+chrono = "0.4"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
