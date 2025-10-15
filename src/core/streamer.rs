@@ -103,12 +103,34 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             let callback_clone = callback.clone();
 
             tokio::spawn(async move {
-                if let Ok(watcher) = parser.provider.watch(&filter).await {
-                    let mut stream = watcher.stream();
-                    while let Some(log) = stream.next().await {
-                        if let Ok(swap) = parser.parse_swap_event(&log, &pair_info_clone).await {
-                            callback_clone(swap);
+                println!("🔄 [SWAP_STREAMER] Starting subscription task for pair {:?}", pair_info_clone.pair_address);
+                
+                match parser.provider.watch(&filter).await {
+                    Ok(watcher) => {
+                        println!("✅ [SWAP_STREAMER] Subscription created successfully for pair {:?}", pair_info_clone.pair_address);
+                        let mut stream = watcher.stream();
+                        
+                        let mut event_count = 0;
+                        while let Some(log) = stream.next().await {
+                            event_count += 1;
+                            println!("📥 [SWAP_STREAMER] Received log #{} for pair {:?}", event_count, pair_info_clone.pair_address);
+                            
+                            match parser.parse_swap_event(&log, &pair_info_clone).await {
+                                Ok(swap) => {
+                                    println!("✅ [SWAP_STREAMER] Successfully parsed swap event #{}", event_count);
+                                    callback_clone(swap);
+                                }
+                                Err(e) => {
+                                    eprintln!("❌ [SWAP_STREAMER] Failed to parse swap event: {}", e);
+                                }
+                            }
                         }
+                        
+                        println!("⚠️ [SWAP_STREAMER] Stream ended for pair {:?} after {} events", pair_info_clone.pair_address, event_count);
+                    }
+                    Err(e) => {
+                        eprintln!("❌ [SWAP_STREAMER] Failed to create subscription for pair {:?}: {}", pair_info_clone.pair_address, e);
+                        eprintln!("   Error details: {:?}", e);
                     }
                 }
             });
