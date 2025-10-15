@@ -50,20 +50,20 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         G: Fn(MigrationEvent) + Send + Sync + 'static,
     {
         if self.is_streaming {
-            println!("⚠️  Streamer is already running");
+            log::warn!("⚠️  Streamer is already running");
             return Ok(());
         }
 
         let token_address = Address::from_str(token_address_str)?;
 
-        println!("\n🚀 Starting swap event streamer for token: {}\n", token_address_str);
+        log::info!("🚀 Starting swap event streamer for token: {}", token_address_str);
 
         // Check if token is on Four.meme bonding curve
         if let Ok(has_activity) = self.check_bonding_curve(&token_address).await {
             if has_activity {
-                println!("\n🎯 Token is on Four.meme bonding curve!");
-                println!("📡 Monitoring bonding curve trades...");
-                println!("🔄 Watching for PairCreated event to auto-switch to DEX\n");
+                log::info!("🎯 Token is on Four.meme bonding curve!");
+                log::info!("📡 Monitoring bonding curve trades...");
+                log::info!("🔄 Watching for PairCreated event to auto-switch to DEX");
 
                 self.is_streaming = true;
                 self.start_bonding_curve_with_migration_detection_and_callback(
@@ -83,7 +83,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             return Err(anyhow!("No trading pairs found on DEX and not on bonding curve"));
         }
 
-        println!("\n📡 Monitoring {} DEX pair(s) for real-time swaps...\n", pairs.len());
+        log::info!("📡 Monitoring {} DEX pair(s) for real-time swaps", pairs.len());
 
         self.is_streaming = true;
 
@@ -103,42 +103,42 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             let callback_clone = callback.clone();
 
             tokio::spawn(async move {
-                println!("🔄 [SWAP_STREAMER] Starting subscription task for pair {:?}", pair_info_clone.pair_address);
+                log::info!("🔄 [SWAP_STREAMER] Starting subscription task for pair {:?}", pair_info_clone.pair_address);
                 
                 match parser.provider.watch(&filter).await {
                     Ok(watcher) => {
-                        println!("✅ [SWAP_STREAMER] Subscription created successfully for pair {:?}", pair_info_clone.pair_address);
+                        log::info!("✅ [SWAP_STREAMER] Subscription created successfully for pair {:?}", pair_info_clone.pair_address);
                         let mut stream = watcher.stream();
                         
                         let mut event_count = 0;
                         while let Some(log) = stream.next().await {
                             event_count += 1;
-                            println!("📥 [SWAP_STREAMER] Received log #{} for pair {:?}", event_count, pair_info_clone.pair_address);
+                            log::debug!("📥 [SWAP_STREAMER] Received log #{} for pair {:?}", event_count, pair_info_clone.pair_address);
                             
                             match parser.parse_swap_event(&log, &pair_info_clone).await {
                                 Ok(swap) => {
-                                    println!("✅ [SWAP_STREAMER] Successfully parsed swap event #{}", event_count);
+                                    log::info!("✅ [SWAP_STREAMER] Successfully parsed swap event #{}", event_count);
                                     callback_clone(swap);
                                 }
                                 Err(e) => {
-                                    eprintln!("❌ [SWAP_STREAMER] Failed to parse swap event: {}", e);
+                                    log::error!("❌ [SWAP_STREAMER] Failed to parse swap event: {}", e);
                                 }
                             }
                         }
                         
-                        println!("⚠️ [SWAP_STREAMER] Stream ended for pair {:?} after {} events", pair_info_clone.pair_address, event_count);
+                        log::warn!("⚠️ [SWAP_STREAMER] Stream ended for pair {:?} after {} events", pair_info_clone.pair_address, event_count);
                     }
                     Err(e) => {
-                        eprintln!("❌ [SWAP_STREAMER] Failed to create subscription for pair {:?}: {}", pair_info_clone.pair_address, e);
-                        eprintln!("   Error details: {:?}", e);
+                        log::error!("❌ [SWAP_STREAMER] Failed to create subscription for pair {:?}: {}", pair_info_clone.pair_address, e);
+                        log::error!("   Error details: {:?}", e);
                     }
                 }
             });
 
-            println!("  ✅ Listening to {} pair: {:?}", pair_info.base_token_symbol, pair_info.pair_address);
+            log::info!("  ✅ Listening to {} pair: {:?}", pair_info.base_token_symbol, pair_info.pair_address);
         }
 
-        println!("\n✨ Streamer is now active. Waiting for swap events...\n");
+        log::info!("✨ Streamer is now active. Waiting for swap events...");
 
         Ok(())
     }
@@ -149,7 +149,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
     }
 
     async fn check_bonding_curve(&self, token_address: &Address) -> Result<bool> {
-        println!("🔍 Checking Four.meme bonding curve for token...");
+        log::debug!("🔍 Checking Four.meme bonding curve for token...");
 
         let bonding_curve = get_bonding_curve_address();
         let transfer_topic = H256::from_str(TRANSFER_TOPIC)?;
@@ -173,13 +173,13 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                 let to = Address::from(log.topics[2]);
 
                 if from == bonding_curve || to == bonding_curve {
-                    println!("  ✅ Found Four.meme bonding curve activity");
+                    log::debug!("  ✅ Found Four.meme bonding curve activity");
                     return Ok(true);
                 }
             }
         }
 
-        println!("  ⚪ No Four.meme bonding curve activity found");
+        log::debug!("  ⚪ No Four.meme bonding curve activity found");
         Ok(false)
     }
 
@@ -210,9 +210,9 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         let swap_callback = Arc::new(swap_callback);
         let migration_callback = migration_callback.map(Arc::new);
 
-        println!("  ✅ Listening to Four.meme bonding curve: {:?}", bonding_curve);
-        println!("  🔍 Watching PancakeSwap Factory for PairCreated event\n");
-        println!("✨ Streamer is now active. Waiting for bonding curve trades...\n");
+        log::info!("  ✅ Listening to Four.meme bonding curve: {:?}", bonding_curve);
+        log::info!("  🔍 Watching PancakeSwap Factory for PairCreated event");
+        log::info!("✨ Streamer is now active. Waiting for bonding curve trades...");
 
         // Spawn bonding curve event listener
         let callback_clone = swap_callback.clone();
@@ -258,8 +258,8 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                         
                         // Check if either token matches our target token
                         if token0 == token_address || token1 == token_address {
-                            println!("\n🎉 MIGRATION DETECTED! PairCreated event received!");
-                            println!("🔄 Switching from bonding curve to DEX monitoring...\n");
+                            log::info!("🎉 MIGRATION DETECTED! PairCreated event received!");
+                            log::info!("🔄 Switching from bonding curve to DEX monitoring...");
                             
                             // Send transaction hash and block number for migration event
                             if let (Some(tx_hash), Some(block_num)) = (log.transaction_hash, log.block_number) {
@@ -281,7 +281,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                 let pairs = pair_finder.find_pairs(token_address).await.unwrap_or_else(|_| vec![]);
                 
                 if pairs.is_empty() {
-                    println!("⚠️  Migration detected but couldn't fetch pair details");
+                    log::warn!("⚠️  Migration detected but couldn't fetch pair details");
                     return;
                 }
 
@@ -317,7 +317,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                 // Start DEX monitoring
                 let swap_topic = H256::from_str(SWAP_TOPIC).unwrap();
                 
-                println!("📡 Now monitoring {} DEX pair(s)\n", pairs.len());
+                log::info!("📡 Now monitoring {} DEX pair(s)", pairs.len());
                 
                 for pair_info in pairs {
                     let filter = Filter::new()
@@ -339,10 +339,10 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                         }
                     });
                     
-                    println!("  ✅ Listening to {} pair: {:?}", pair_info.base_token_symbol, pair_info.pair_address);
+                    log::info!("  ✅ Listening to {} pair: {:?}", pair_info.base_token_symbol, pair_info.pair_address);
                 }
                 
-                println!("\n✨ DEX monitoring is now active!\n");
+                log::info!("✨ DEX monitoring is now active!");
             }
         });
 
@@ -351,9 +351,9 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
 
     pub async fn stop(&mut self) {
         if self.is_streaming {
-            println!("\n🛑 Stopping streamer...");
+            log::info!("🛑 Stopping streamer...");
             self.is_streaming = false;
-            println!("✅ Streamer stopped.\n");
+            log::info!("✅ Streamer stopped.");
         }
     }
 }

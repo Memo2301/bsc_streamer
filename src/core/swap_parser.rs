@@ -51,23 +51,31 @@ impl<M: Middleware + 'static> SwapParser<M> {
             .ok_or_else(|| anyhow!("Swap event not found in ABI"))?;
         let parsed = event.parse_log(log.clone().into())?;
 
-        // Safely extract parameters with proper error handling
-        let amount0_in: U256 = parsed.params.get(0)
-            .and_then(|p| p.value.clone().into_uint())
-            .ok_or_else(|| anyhow!("Failed to parse amount0In"))?;
-        let amount1_in: U256 = parsed.params.get(1)
-            .and_then(|p| p.value.clone().into_uint())
-            .ok_or_else(|| anyhow!("Failed to parse amount1In"))?;
-        let amount0_out: U256 = parsed.params.get(2)
-            .and_then(|p| p.value.clone().into_uint())
-            .ok_or_else(|| anyhow!("Failed to parse amount0Out"))?;
-        let amount1_out: U256 = parsed.params.get(3)
-            .and_then(|p| p.value.clone().into_uint())
-            .ok_or_else(|| anyhow!("Failed to parse amount1Out"))?;
-        let to: Address = parsed.params.get(4)
-            .and_then(|p| p.value.clone().into_address())
-            .ok_or_else(|| anyhow!("Failed to parse to address"))?;
+        // Helper function to find parameter by name
+        let find_param = |name: &str| -> Result<ethers::abi::Token> {
+            parsed.params.iter()
+                .find(|p| p.name == name)
+                .map(|p| p.value.clone())
+                .ok_or_else(|| anyhow!("Parameter '{}' not found", name))
+        };
+
+        // Extract parameters by name (more reliable than by index)
+        let amount0_in: U256 = find_param("amount0In")?
+            .into_uint()
+            .ok_or_else(|| anyhow!("Failed to parse amount0In as uint"))?;
+        let amount1_in: U256 = find_param("amount1In")?
+            .into_uint()
+            .ok_or_else(|| anyhow!("Failed to parse amount1In as uint"))?;
+        let amount0_out: U256 = find_param("amount0Out")?
+            .into_uint()
+            .ok_or_else(|| anyhow!("Failed to parse amount0Out as uint"))?;
+        let amount1_out: U256 = find_param("amount1Out")?
+            .into_uint()
+            .ok_or_else(|| anyhow!("Failed to parse amount1Out as uint"))?;
+        
+        // Indexed parameters come from topics
         let sender: Address = Address::from(log.topics[1]);
+        let to: Address = Address::from(log.topics[2]);
 
         // Determine trade type and amounts
         let is_token0_target = token0 == pair_info.token;
