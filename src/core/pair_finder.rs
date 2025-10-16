@@ -42,13 +42,13 @@ impl<M: Middleware + 'static> PairFinder<M> {
         let mut pairs = Vec::new();
 
         // Check V2 factory
-        println!("  Checking PancakeSwap V2 Factory...");
+        log::debug!("  Checking PancakeSwap V2 Factory...");
         if let Ok(v2_pairs) = self.find_v2_pairs(token_address, &base_tokens).await {
             pairs.extend(v2_pairs);
         }
 
         // Check V3 factory
-        println!("  Checking PancakeSwap V3 Factory...");
+        log::debug!("  Checking PancakeSwap V3 Factory...");
         if let Ok(v3_pairs) = self.find_v3_pairs(token_address, &base_tokens).await {
             pairs.extend(v3_pairs);
         }
@@ -112,7 +112,7 @@ impl<M: Middleware + 'static> PairFinder<M> {
                     .await
                 {
                     Ok(pool_address) if !pool_address.is_zero() => {
-                        println!("  ✅ Found V3 {} pool (fee {}): {:?}", symbol, fee, pool_address);
+                        log::debug!("  ✅ Found V3 {} pool (fee {}): {:?}", symbol, fee, pool_address);
                         pairs.push(PairInfo {
                             pair_address: pool_address,
                             token: token_address,

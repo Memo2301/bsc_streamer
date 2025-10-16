@@ -84,7 +84,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             return Err(anyhow!("No trading pairs found on DEX and not on bonding curve"));
         }
 
-        log::info!("📡 Monitoring {} DEX pair(s) for real-time swaps", pairs.len());
+        log::debug!("📡 Monitoring {} DEX pair(s) for real-time swaps", pairs.len());
 
         self.is_streaming = true;
 
@@ -144,10 +144,10 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                 }
             });
 
-            log::info!("  ✅ Listening to {} {} pair: {:?}", pool_type, pair_info.base_token_symbol, pair_info.pair_address);
+            log::debug!("  ✅ Listening to {} {} pair: {:?}", pool_type, pair_info.base_token_symbol, pair_info.pair_address);
         }
 
-        log::info!("✨ Streamer is now active. Waiting for swap events...");
+        log::debug!("✨ Streamer is now active. Waiting for swap events...");
 
         Ok(())
     }
@@ -219,9 +219,9 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         let swap_callback = Arc::new(swap_callback);
         let migration_callback = migration_callback.map(Arc::new);
 
-        log::info!("  ✅ Listening to Four.meme bonding curve: {:?}", bonding_curve);
-        log::info!("  🔍 Watching PancakeSwap Factory for PairCreated event");
-        log::info!("✨ Streamer is now active. Waiting for bonding curve trades...");
+        log::debug!("  ✅ Listening to Four.meme bonding curve: {:?}", bonding_curve);
+        log::debug!("  🔍 Watching PancakeSwap Factory for PairCreated event");
+        log::debug!("✨ Streamer is now active. Waiting for bonding curve trades...");
 
         // Spawn bonding curve event listener
         let callback_clone = swap_callback.clone();
@@ -354,7 +354,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                         }
                     });
                     
-                    log::info!("  ✅ Listening to {} {} pair: {:?}", pool_type, pair_info.base_token_symbol, pair_info.pair_address);
+                    log::debug!("  ✅ Listening to {} {} pair: {:?}", pool_type, pair_info.base_token_symbol, pair_info.pair_address);
                 }
                 
                 log::info!("✨ DEX monitoring is now active!");
