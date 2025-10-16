@@ -4,6 +4,9 @@ use std::str::FromStr;
 // PancakeSwap V2 Factory
 pub const PANCAKESWAP_V2_FACTORY: &str = "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73";
 
+// PancakeSwap V3 Factory (🔥 NEW: For V3 token pairs)
+pub const PANCAKESWAP_V3_FACTORY: &str = "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865";
+
 // Four.meme bonding curve contract
 pub const FOURMEME_BONDING_CURVE: &str = "0x5c952063c7fc8610FFDB798152D69F0B9550762b";
 
@@ -46,6 +49,10 @@ pub const BASE_TOKENS: &[BaseToken] = &[
 
 pub fn get_factory_address() -> Address {
     Address::from_str(PANCAKESWAP_V2_FACTORY).unwrap()
+}
+
+pub fn get_v3_factory_address() -> Address {
+    Address::from_str(PANCAKESWAP_V3_FACTORY).unwrap()
 }
 
 pub fn get_bonding_curve_address() -> Address {

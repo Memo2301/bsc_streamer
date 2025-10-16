@@ -229,6 +229,7 @@ dependencies = [
  "dotenv",
  "ethers",
  "futures",
+ "log",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
