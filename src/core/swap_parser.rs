@@ -3,7 +3,7 @@ use ethers::{
     abi::Abi,
     contract::Contract,
     providers::Middleware,
-    types::{Address, Log, U256},
+    types::{Address, Log, I256, U256},
     utils::format_units,
 };
 use std::sync::Arc;
@@ -11,10 +11,16 @@ use std::sync::Arc;
 use crate::core::token_info::TokenInfoCache;
 use crate::types::{PairInfo, Platform, PriceInfo, SwapEvent, TokenInfo, TradeType};
 
-const PAIR_ABI: &str = r#"[
+const PAIR_V2_ABI: &str = r#"[
     {"constant":true,"inputs":[],"name":"token0","outputs":[{"name":"","type":"address"}],"type":"function"},
     {"constant":true,"inputs":[],"name":"token1","outputs":[{"name":"","type":"address"}],"type":"function"},
     {"anonymous":false,"inputs":[{"indexed":true,"name":"sender","type":"address"},{"indexed":false,"name":"amount0In","type":"uint256"},{"indexed":false,"name":"amount1In","type":"uint256"},{"indexed":false,"name":"amount0Out","type":"uint256"},{"indexed":false,"name":"amount1Out","type":"uint256"},{"indexed":true,"name":"to","type":"address"}],"name":"Swap","type":"event"}
+]"#;
+
+const POOL_V3_ABI: &str = r#"[
+    {"constant":true,"inputs":[],"name":"token0","outputs":[{"name":"","type":"address"}],"type":"function"},
+    {"constant":true,"inputs":[],"name":"token1","outputs":[{"name":"","type":"address"}],"type":"function"},
+    {"anonymous":false,"inputs":[{"indexed":true,"name":"sender","type":"address"},{"indexed":true,"name":"recipient","type":"address"},{"indexed":false,"name":"amount0","type":"int256"},{"indexed":false,"name":"amount1","type":"int256"},{"indexed":false,"name":"sqrtPriceX96","type":"uint160"},{"indexed":false,"name":"liquidity","type":"uint128"},{"indexed":false,"name":"tick","type":"int24"},{"indexed":false,"name":"protocolFeesToken0","type":"uint128"},{"indexed":false,"name":"protocolFeesToken1","type":"uint128"}],"name":"Swap","type":"event"}
 ]"#;
 
 pub struct SwapParser<M> {
@@ -35,7 +41,19 @@ impl<M: Middleware + 'static> SwapParser<M> {
         log: &Log,
         pair_info: &PairInfo,
     ) -> Result<SwapEvent> {
-        let abi: Abi = serde_json::from_str(PAIR_ABI)?;
+        if pair_info.is_v3 {
+            self.parse_v3_swap_event(log, pair_info).await
+        } else {
+            self.parse_v2_swap_event(log, pair_info).await
+        }
+    }
+
+    async fn parse_v2_swap_event(
+        &self,
+        log: &Log,
+        pair_info: &PairInfo,
+    ) -> Result<SwapEvent> {
+        let abi: Abi = serde_json::from_str(PAIR_V2_ABI)?;
         let contract = Contract::new(pair_info.pair_address, abi.clone(), self.provider.clone());
 
         // Get token addresses
@@ -112,6 +130,165 @@ impl<M: Middleware + 'static> SwapParser<M> {
                         TradeType::Sell,
                         amount1_in,
                         amount0_out,
+                        token1_info.decimals,
+                        token0_info.decimals,
+                    )
+                }
+            };
+
+        let token_amount_str = format_units(token_amount, token_decimals as u32)?;
+        let base_amount_str = format_units(base_amount, base_decimals as u32)?;
+
+        // Calculate price
+        let token_amount_f64: f64 = token_amount_str.parse().unwrap_or(0.0);
+        let base_amount_f64: f64 = base_amount_str.parse().unwrap_or(0.0);
+        let price = if token_amount_f64 > 0.0 {
+            base_amount_f64 / token_amount_f64
+        } else {
+            0.0
+        };
+
+        // Get block info
+        let block = self.provider.get_block(log.block_number.unwrap()).await?;
+        let timestamp = block.and_then(|b| {
+            b.timestamp
+                .as_u64()
+                .checked_mul(1000)
+                .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+                .map(|dt| dt.to_rfc3339())
+        });
+
+        Ok(SwapEvent {
+            transaction_hash: log.transaction_hash.unwrap(),
+            block_number: log.block_number.unwrap().as_u64(),
+            timestamp,
+            platform: Platform::PancakeSwap,
+            trade_type,
+            token: TokenInfo {
+                address: pair_info.token,
+                symbol: if is_token0_target {
+                    token0_info.symbol
+                } else {
+                    token1_info.symbol
+                },
+                amount: token_amount_str,
+                decimals: token_decimals,
+            },
+            base_token: TokenInfo {
+                address: pair_info.base_token,
+                symbol: pair_info.base_token_symbol.clone(),
+                amount: base_amount_str,
+                decimals: base_decimals,
+            },
+            price: PriceInfo {
+                value: price,
+                display: format!("{:.12} {}", price, pair_info.base_token_symbol),
+                base_token: pair_info.base_token_symbol.clone(),
+            },
+            sender,
+            recipient: to,
+            pair_address: Some(pair_info.pair_address),
+            bonding_curve_address: None,
+        })
+    }
+
+    async fn parse_v3_swap_event(
+        &self,
+        log: &Log,
+        pair_info: &PairInfo,
+    ) -> Result<SwapEvent> {
+        let abi: Abi = serde_json::from_str(POOL_V3_ABI)?;
+        let contract = Contract::new(pair_info.pair_address, abi.clone(), self.provider.clone());
+
+        // Get token addresses
+        let token0: Address = contract.method("token0", ())?.call().await?;
+        let token1: Address = contract.method("token1", ())?.call().await?;
+
+        // Get token info
+        let token0_info = self.token_cache.get_token_info(token0).await?;
+        let token1_info = self.token_cache.get_token_info(token1).await?;
+
+        // Parse event
+        let event = abi.events().find(|e| e.name == "Swap")
+            .ok_or_else(|| anyhow!("Swap event not found in ABI"))?;
+        let parsed = event.parse_log(log.clone().into())?;
+
+        // Helper function to find parameter by name
+        let find_param = |name: &str| -> Result<ethers::abi::Token> {
+            parsed.params.iter()
+                .find(|p| p.name == name)
+                .map(|p| p.value.clone())
+                .ok_or_else(|| anyhow!("Parameter '{}' not found", name))
+        };
+
+        // V3 uses int256 amounts: negative = out, positive = in
+        let amount0_token = find_param("amount0")?;
+        let amount0_u256: U256 = amount0_token
+            .into_int()
+            .ok_or_else(|| anyhow!("Failed to parse amount0 as int"))?;
+        let amount0_raw = I256::from_raw(amount0_u256);
+        
+        let amount1_token = find_param("amount1")?;
+        let amount1_u256: U256 = amount1_token
+            .into_int()
+            .ok_or_else(|| anyhow!("Failed to parse amount1 as int"))?;
+        let amount1_raw = I256::from_raw(amount1_u256);
+
+        // Convert to absolute values for calculation
+        let amount0 = if amount0_raw.is_negative() {
+            amount0_raw.wrapping_neg().into_raw()
+        } else {
+            amount0_raw.into_raw()
+        };
+        let amount1 = if amount1_raw.is_negative() {
+            amount1_raw.wrapping_neg().into_raw()
+        } else {
+            amount1_raw.into_raw()
+        };
+        
+        // Indexed parameters come from topics
+        let sender: Address = Address::from(log.topics[1]);
+        let to: Address = Address::from(log.topics[2]);
+
+        // Determine trade type and amounts based on sign
+        let is_token0_target = token0 == pair_info.token;
+        let (trade_type, token_amount, base_amount, token_decimals, base_decimals) =
+            if is_token0_target {
+                if amount0_raw.is_negative() {
+                    // token0 out = buy
+                    (
+                        TradeType::Buy,
+                        amount0,
+                        amount1,
+                        token0_info.decimals,
+                        token1_info.decimals,
+                    )
+                } else {
+                    // token0 in = sell
+                    (
+                        TradeType::Sell,
+                        amount0,
+                        amount1,
+                        token0_info.decimals,
+                        token1_info.decimals,
+                    )
+                }
+            } else {
+                if amount1_raw.is_negative() {
+                    // token1 out = buy
+                    (
+                        TradeType::Buy,
+                        amount1,
+                        amount0,
+                        token1_info.decimals,
+                        token0_info.decimals,
+                    )
+                } else {
+                    // token1 in = sell
+                    (
+                        TradeType::Sell,
+                        amount1,
+                        amount0,
                         token1_info.decimals,
                         token0_info.decimals,
                     )

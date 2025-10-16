@@ -12,7 +12,8 @@ use crate::core::{pair_finder::PairFinder, swap_parser::SwapParser, token_info::
 use crate::types::{MigrationEvent, Platform, SwapEvent};
 
 const TRANSFER_TOPIC: &str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
-const SWAP_TOPIC: &str = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
+const SWAP_V2_TOPIC: &str = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
+const SWAP_V3_TOPIC: &str = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83";
 const PAIR_CREATED_TOPIC: &str = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 
 pub struct SwapStreamer<M> {
@@ -92,7 +93,15 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
 
         // Monitor each pair
         for pair_info in pairs {
-            let swap_topic = H256::from_str(SWAP_TOPIC)?;
+            // Use correct swap topic based on pool type
+            let swap_topic = if pair_info.is_v3 {
+                H256::from_str(SWAP_V3_TOPIC)?
+            } else {
+                H256::from_str(SWAP_V2_TOPIC)?
+            };
+            
+            let pool_type = if pair_info.is_v3 { "V3" } else { "V2" };
+            
             // Watch for new events only (from latest block forward)
             let filter = Filter::new()
                 .address(pair_info.pair_address)
@@ -103,39 +112,39 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             let callback_clone = callback.clone();
 
             tokio::spawn(async move {
-                log::info!("🔄 [SWAP_STREAMER] Starting subscription task for pair {:?}", pair_info_clone.pair_address);
+                log::info!("🔄 [SWAP_STREAMER] Starting {} subscription task for pair {:?}", pool_type, pair_info_clone.pair_address);
                 
                 match parser.provider.watch(&filter).await {
                     Ok(watcher) => {
-                        log::info!("✅ [SWAP_STREAMER] Subscription created successfully for pair {:?}", pair_info_clone.pair_address);
+                        log::info!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?}", pool_type, pair_info_clone.pair_address);
                         let mut stream = watcher.stream();
                         
                         let mut event_count = 0;
                         while let Some(log) = stream.next().await {
                             event_count += 1;
-                            log::debug!("📥 [SWAP_STREAMER] Received log #{} for pair {:?}", event_count, pair_info_clone.pair_address);
+                            log::debug!("📥 [SWAP_STREAMER] Received {} log #{} for pair {:?}", pool_type, event_count, pair_info_clone.pair_address);
                             
                             match parser.parse_swap_event(&log, &pair_info_clone).await {
                                 Ok(swap) => {
-                                    log::info!("✅ [SWAP_STREAMER] Successfully parsed swap event #{}", event_count);
+                                    log::info!("✅ [SWAP_STREAMER] Successfully parsed {} swap event #{}", pool_type, event_count);
                                     callback_clone(swap);
                                 }
                                 Err(e) => {
-                                    log::error!("❌ [SWAP_STREAMER] Failed to parse swap event: {}", e);
+                                    log::error!("❌ [SWAP_STREAMER] Failed to parse {} swap event: {}", pool_type, e);
                                 }
                             }
                         }
                         
-                        log::warn!("⚠️ [SWAP_STREAMER] Stream ended for pair {:?} after {} events", pair_info_clone.pair_address, event_count);
+                        log::warn!("⚠️ [SWAP_STREAMER] {} stream ended for pair {:?} after {} events", pool_type, pair_info_clone.pair_address, event_count);
                     }
                     Err(e) => {
-                        log::error!("❌ [SWAP_STREAMER] Failed to create subscription for pair {:?}: {}", pair_info_clone.pair_address, e);
+                        log::error!("❌ [SWAP_STREAMER] Failed to create {} subscription for pair {:?}: {}", pool_type, pair_info_clone.pair_address, e);
                         log::error!("   Error details: {:?}", e);
                     }
                 }
             });
 
-            log::info!("  ✅ Listening to {} pair: {:?}", pair_info.base_token_symbol, pair_info.pair_address);
+            log::info!("  ✅ Listening to {} {} pair: {:?}", pool_type, pair_info.base_token_symbol, pair_info.pair_address);
         }
 
         log::info!("✨ Streamer is now active. Waiting for swap events...");
@@ -315,11 +324,17 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                 }
                 
                 // Start DEX monitoring
-                let swap_topic = H256::from_str(SWAP_TOPIC).unwrap();
-                
                 log::info!("📡 Now monitoring {} DEX pair(s)", pairs.len());
                 
                 for pair_info in pairs {
+                    let swap_topic = if pair_info.is_v3 {
+                        H256::from_str(SWAP_V3_TOPIC).unwrap()
+                    } else {
+                        H256::from_str(SWAP_V2_TOPIC).unwrap()
+                    };
+                    
+                    let pool_type = if pair_info.is_v3 { "V3" } else { "V2" };
+                    
                     let filter = Filter::new()
                         .address(pair_info.pair_address)
                         .topic0(swap_topic);
@@ -339,7 +354,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                         }
                     });
                     
-                    log::info!("  ✅ Listening to {} pair: {:?}", pair_info.base_token_symbol, pair_info.pair_address);
+                    log::info!("  ✅ Listening to {} {} pair: {:?}", pool_type, pair_info.base_token_symbol, pair_info.pair_address);
                 }
                 
                 log::info!("✨ DEX monitoring is now active!");

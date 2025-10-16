@@ -68,6 +68,7 @@ pub struct PairInfo {
     pub token: Address,
     pub base_token: Address,
     pub base_token_symbol: String,
+    pub is_v3: bool,  // true for V3, false for V2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -83,6 +83,7 @@ impl<M: Middleware + 'static> PairFinder<M> {
                         token: token_address,
                         base_token: *base_token_address,
                         base_token_symbol: symbol.clone(),
+                        is_v3: false,
                     });
                 }
                 Ok(_) => {}
@@ -117,6 +118,7 @@ impl<M: Middleware + 'static> PairFinder<M> {
                             token: token_address,
                             base_token: *base_token_address,
                             base_token_symbol: symbol.clone(),
+                            is_v3: true,
                         });
                         break; // Found a pool for this base token, no need to check other fees
                     }
