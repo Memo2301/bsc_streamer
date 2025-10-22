@@ -77,8 +77,6 @@ where
             }
         }
 
-        println!("\n➕ Adding token to streamer: {:?}", address);
-
         // Create cancellation token for this token's monitoring
         let cancel_token = CancellationToken::new();
 
@@ -106,11 +104,11 @@ where
                     migration_callback,
                 ) => {
                     if let Err(e) = result {
-                        eprintln!("❌ Error monitoring token {:?}: {}", address, e);
+                        log::error!("Error monitoring token {:?}: {}", address, e);
                     }
                 }
                 _ = cancel_token_clone.cancelled() => {
-                    println!("🛑 Stopped monitoring token: {:?}", address);
+                    log::info!("🛑 Stopped monitoring token: {:?}", address);
                 }
             }
 
@@ -119,7 +117,7 @@ where
             tokens.remove(&address);
         });
 
-        println!("✅ Token added successfully\n");
+        log::info!("✅ Token added successfully");
 
         Ok(())
     }
@@ -148,9 +146,7 @@ where
 
         match cancel_token {
             Some(token) => {
-                println!("\n➖ Removing token from streamer: {:?}", address);
                 token.cancel();
-                println!("✅ Token removal initiated\n");
                 Ok(())
             }
             None => Err(anyhow!("Token {:?} is not being monitored", address)),
@@ -189,13 +185,10 @@ where
 
     /// Stop monitoring all tokens
     pub async fn stop_all(&self) {
-        println!("\n🛑 Stopping all token monitoring...");
         let tokens = self.tokens.read().await;
-        for (address, token) in tokens.iter() {
-            println!("  Stopping: {:?}", address);
+        for (_address, token) in tokens.iter() {
             token.cancel();
         }
-        println!("✅ All tokens stopped\n");
     }
 }
 

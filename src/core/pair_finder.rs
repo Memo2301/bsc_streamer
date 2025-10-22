@@ -36,28 +36,22 @@ impl<M: Middleware + 'static> PairFinder<M> {
     }
 
     pub async fn find_pairs(&self, token_address: Address) -> Result<Vec<PairInfo>> {
-        println!("🔍 Finding pairs for token...\n");
-
         let base_tokens = get_base_tokens();
         let mut pairs = Vec::new();
 
         // Check V2 factory
-        log::debug!("  Checking PancakeSwap V2 Factory...");
         if let Ok(v2_pairs) = self.find_v2_pairs(token_address, &base_tokens).await {
             pairs.extend(v2_pairs);
         }
 
         // Check V3 factory
-        log::debug!("  Checking PancakeSwap V3 Factory...");
         if let Ok(v3_pairs) = self.find_v3_pairs(token_address, &base_tokens).await {
             pairs.extend(v3_pairs);
         }
 
         // Only show "no pairs" message if we checked both factories and found nothing
         if pairs.is_empty() {
-            println!("  ⚠️  No pairs found for this token in V2 or V3");
-            println!("  💡 This token might not have liquidity on PancakeSwap");
-            println!("  💡 Try a different token or check if it exists on other DEXs\n");
+            log::info!("⚠️  No pairs found");
         }
 
         Ok(pairs)
@@ -77,7 +71,6 @@ impl<M: Middleware + 'static> PairFinder<M> {
                 .await
             {
                 Ok(pair_address) if !pair_address.is_zero() => {
-                    println!("  ✅ Found V2 {} pair: {:?}", symbol, pair_address);
                     pairs.push(PairInfo {
                         pair_address,
                         token: token_address,
@@ -87,9 +80,7 @@ impl<M: Middleware + 'static> PairFinder<M> {
                     });
                 }
                 Ok(_) => {}
-                Err(e) => {
-                    println!("  ⚠️  Error checking V2 {} pair: {}", symbol, e);
-                }
+                Err(_) => {}
             }
         }
 
@@ -112,7 +103,6 @@ impl<M: Middleware + 'static> PairFinder<M> {
                     .await
                 {
                     Ok(pool_address) if !pool_address.is_zero() => {
-                        log::debug!("  ✅ Found V3 {} pool (fee {}): {:?}", symbol, fee, pool_address);
                         pairs.push(PairInfo {
                             pair_address: pool_address,
                             token: token_address,
@@ -123,9 +113,7 @@ impl<M: Middleware + 'static> PairFinder<M> {
                         break; // Found a pool for this base token, no need to check other fees
                     }
                     Ok(_) => {}
-                    Err(e) => {
-                        println!("  ⚠️  Error checking V3 {} pool (fee {}): {}", symbol, fee, e);
-                    }
+                    Err(_) => {}
                 }
             }
         }
