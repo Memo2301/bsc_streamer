@@ -36,6 +36,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
     pub async fn start<F>(&mut self, token_address_str: &str, callback: F) -> Result<()>
     where
         F: Fn(SwapEvent) + Send + Sync + 'static,
+        M::Provider: ethers::providers::PubsubClient,
     {
         self.start_with_migration_callback(token_address_str, callback, Option::<fn(MigrationEvent)>::None).await
     }
@@ -49,6 +50,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
     where
         F: Fn(SwapEvent) + Send + Sync + 'static,
         G: Fn(MigrationEvent) + Send + Sync + 'static,
+        M::Provider: ethers::providers::PubsubClient,
     {
         if self.is_streaming {
             log::warn!("⚠️  Streamer is already running");
@@ -114,10 +116,10 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             tokio::spawn(async move {
                 log::info!("🔄 [SWAP_STREAMER] Starting {} subscription task for pair {:?}", pool_type, pair_info_clone.pair_address);
                 
-                match parser.provider.watch(&filter).await {
-                    Ok(watcher) => {
+                // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
+                match parser.provider.subscribe_logs(&filter).await {
+                    Ok(mut stream) => {
                         log::info!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?}", pool_type, pair_info_clone.pair_address);
-                        let mut stream = watcher.stream();
                         
                         let mut event_count = 0;
                         while let Some(log) = stream.next().await {
@@ -201,6 +203,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
     where
         F: Fn(SwapEvent) + Send + Sync + 'static,
         G: Fn(MigrationEvent) + Send + Sync + 'static,
+        M::Provider: ethers::providers::PubsubClient,
     {
         let bonding_curve = get_bonding_curve_address();
         let factory_address = get_factory_address();
@@ -226,8 +229,8 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         // Spawn bonding curve event listener
         let callback_clone = swap_callback.clone();
         tokio::spawn(async move {
-            if let Ok(watcher) = parser.provider.watch(&transfer_filter).await {
-                let mut stream = watcher.stream();
+            // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
+            if let Ok(mut stream) = parser.provider.subscribe_logs(&transfer_filter).await {
                 while let Some(log) = stream.next().await {
                     if log.topics.len() >= 3 {
                         let from = Address::from(log.topics[1]);
@@ -258,8 +261,8 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                 .address(factory_address)
                 .topic0(pair_created_topic);
             
-            if let Ok(watcher) = provider_clone.watch(&filter).await {
-                let mut stream = watcher.stream();
+            // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
+            if let Ok(mut stream) = provider_clone.subscribe_logs(&filter).await {
                 while let Some(log) = stream.next().await {
                     if log.topics.len() >= 3 {
                         let token0 = Address::from(log.topics[1]);
@@ -344,8 +347,8 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                     let callback_clone = swap_callback.clone();
                     
                     tokio::spawn(async move {
-                        if let Ok(watcher) = parser_clone.provider.watch(&filter).await {
-                            let mut stream = watcher.stream();
+                        // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
+                        if let Ok(mut stream) = parser_clone.provider.subscribe_logs(&filter).await {
                             while let Some(log) = stream.next().await {
                                 if let Ok(swap) = parser_clone.parse_swap_event(&log, &pair_info_clone).await {
                                     callback_clone(swap);

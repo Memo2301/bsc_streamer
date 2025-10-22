@@ -65,6 +65,7 @@ where
     where
         F: Fn(SwapEvent) + Send + Sync + 'static,
         G: Fn(MigrationEvent) + Send + Sync + 'static,
+        M::Provider: ethers::providers::PubsubClient,
     {
         let address = Address::from_str(token_address)?;
 

@@ -192,6 +192,7 @@ where
     M: Middleware + 'static,
     F: Fn(SwapEvent) + Send + Sync + 'static,
     G: Fn(MigrationEvent) + Send + Sync + 'static,
+    M::Provider: ethers::providers::PubsubClient,
 {
     /// Set a callback for migration events
     ///
