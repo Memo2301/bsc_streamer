@@ -59,7 +59,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
 
         let token_address = Address::from_str(token_address_str)?;
 
-        log::info!("🚀 Starting swap event streamer for token: {}", token_address_str);
+        log::debug!("🚀 Starting swap event streamer for token: {}", token_address_str);
 
         // Check if token is on Four.meme bonding curve
         if let Ok(has_activity) = self.check_bonding_curve(&token_address).await {
@@ -114,12 +114,12 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             let callback_clone = callback.clone();
 
             tokio::spawn(async move {
-                log::info!("🔄 [SWAP_STREAMER] Starting {} subscription task for pair {:?}", pool_type, pair_info_clone.pair_address);
+                log::debug!("🔄 [SWAP_STREAMER] Starting {} subscription task for pair {:?}", pool_type, pair_info_clone.pair_address);
                 
                 // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
                 match parser.provider.subscribe_logs(&filter).await {
                     Ok(mut stream) => {
-                        log::info!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?}", pool_type, pair_info_clone.pair_address);
+                        log::debug!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?}", pool_type, pair_info_clone.pair_address);
                         
                         let mut event_count = 0;
                         while let Some(log) = stream.next().await {
