@@ -128,7 +128,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                             
                             match parser.parse_swap_event(&log, &pair_info_clone).await {
                                 Ok(swap) => {
-                                    log::info!("✅ [SWAP_STREAMER] Successfully parsed {} swap event #{}", pool_type, event_count);
+                                    log::debug!("✅ [SWAP_STREAMER] Successfully parsed {} swap event #{}", pool_type, event_count);
                                     callback_clone(swap);
                                 }
                                 Err(e) => {
