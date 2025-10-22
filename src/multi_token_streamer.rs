@@ -113,8 +113,6 @@ where
             tokens.remove(&address);
         });
 
-        log::info!("✅ Token added successfully");
-
         Ok(())
     }
 
