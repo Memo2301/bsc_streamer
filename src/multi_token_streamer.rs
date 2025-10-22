@@ -96,20 +96,16 @@ where
             // Format address as hex string with 0x prefix
             let address_str = format!("{:#x}", address);
 
-            // Create a select between the streamer and cancellation
-            tokio::select! {
-                result = streamer.start_with_migration_callback(
-                    &address_str,
-                    swap_callback,
-                    migration_callback,
-                ) => {
-                    if let Err(e) = result {
-                        log::error!("Error monitoring token {:?}: {}", address, e);
-                    }
-                }
-                _ = cancel_token_clone.cancelled() => {
-                    log::info!("🛑 Stopped monitoring token: {:?}", address);
-                }
+            // Pass cancel token to streamer so pair subscriptions can be cancelled
+            let result = streamer.start_with_migration_callback_and_cancel(
+                &address_str,
+                swap_callback,
+                migration_callback,
+                cancel_token_clone.clone(),
+            ).await;
+            
+            if let Err(e) = result {
+                log::error!("Error monitoring token {:?}: {}", address, e);
             }
 
             // Clean up from tokens map

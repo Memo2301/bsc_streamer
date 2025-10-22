@@ -6,6 +6,7 @@ use ethers::{
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::{get_bonding_curve_address, get_factory_address};
 use crate::core::{pair_finder::PairFinder, swap_parser::SwapParser, token_info::TokenInfoCache};
@@ -52,6 +53,27 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         G: Fn(MigrationEvent) + Send + Sync + 'static,
         M::Provider: ethers::providers::PubsubClient,
     {
+        // Call the cancel-aware version with a dummy token that never cancels
+        self.start_with_migration_callback_and_cancel(
+            token_address_str,
+            swap_callback,
+            migration_callback,
+            CancellationToken::new(), // Never cancelled
+        ).await
+    }
+
+    pub async fn start_with_migration_callback_and_cancel<F, G>(
+        &mut self,
+        token_address_str: &str,
+        swap_callback: F,
+        migration_callback: Option<G>,
+        cancel_token: CancellationToken,
+    ) -> Result<()>
+    where
+        F: Fn(SwapEvent) + Send + Sync + 'static,
+        G: Fn(MigrationEvent) + Send + Sync + 'static,
+        M::Provider: ethers::providers::PubsubClient,
+    {
         if self.is_streaming {
             log::warn!("⚠️  Streamer is already running");
             return Ok(());
@@ -73,6 +95,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                     token_address,
                     swap_callback,
                     migration_callback,
+                    cancel_token.clone(),
                 )
                 .await?;
                 return Ok(());
@@ -112,6 +135,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             let parser = self.swap_parser.clone();
             let pair_info_clone = pair_info.clone();
             let callback_clone = callback.clone();
+            let cancel_clone = cancel_token.clone();
 
             tokio::spawn(async move {
                 log::debug!("🔄 [SWAP_STREAMER] Starting {} subscription task for pair {:?}", pool_type, pair_info_clone.pair_address);
@@ -122,22 +146,38 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                         log::debug!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?}", pool_type, pair_info_clone.pair_address);
                         
                         let mut event_count = 0;
-                        while let Some(log) = stream.next().await {
-                            event_count += 1;
-                            log::debug!("📥 [SWAP_STREAMER] Received {} log #{} for pair {:?}", pool_type, event_count, pair_info_clone.pair_address);
-                            
-                            match parser.parse_swap_event(&log, &pair_info_clone).await {
-                                Ok(swap) => {
-                                    log::debug!("✅ [SWAP_STREAMER] Successfully parsed {} swap event #{}", pool_type, event_count);
-                                    callback_clone(swap);
+                        loop {
+                            tokio::select! {
+                                // Listen for cancel signal
+                                _ = cancel_clone.cancelled() => {
+                                    log::debug!("🛑 [SWAP_STREAMER] {} subscription for pair {:?} cancelled after {} events", pool_type, pair_info_clone.pair_address, event_count);
+                                    break;
                                 }
-                                Err(e) => {
-                                    log::error!("❌ [SWAP_STREAMER] Failed to parse {} swap event: {}", pool_type, e);
+                                // Process stream events
+                                log_option = stream.next() => {
+                                    match log_option {
+                                        Some(log) => {
+                                            event_count += 1;
+                                            log::debug!("📥 [SWAP_STREAMER] Received {} log #{} for pair {:?}", pool_type, event_count, pair_info_clone.pair_address);
+                                            
+                                            match parser.parse_swap_event(&log, &pair_info_clone).await {
+                                                Ok(swap) => {
+                                                    log::debug!("✅ [SWAP_STREAMER] Successfully parsed {} swap event #{}", pool_type, event_count);
+                                                    callback_clone(swap);
+                                                }
+                                                Err(e) => {
+                                                    log::error!("❌ [SWAP_STREAMER] Failed to parse {} swap event: {}", pool_type, e);
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            log::warn!("⚠️ [SWAP_STREAMER] {} stream ended for pair {:?} after {} events", pool_type, pair_info_clone.pair_address, event_count);
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
-                        
-                        log::warn!("⚠️ [SWAP_STREAMER] {} stream ended for pair {:?} after {} events", pool_type, pair_info_clone.pair_address, event_count);
                     }
                     Err(e) => {
                         log::error!("❌ [SWAP_STREAMER] Failed to create {} subscription for pair {:?}: {}", pool_type, pair_info_clone.pair_address, e);
@@ -199,6 +239,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         token_address: Address,
         swap_callback: F,
         migration_callback: Option<G>,
+        cancel_token: CancellationToken,
     ) -> Result<()>
     where
         F: Fn(SwapEvent) + Send + Sync + 'static,
@@ -228,20 +269,37 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
 
         // Spawn bonding curve event listener
         let callback_clone = swap_callback.clone();
+        let cancel_clone = cancel_token.clone();
         tokio::spawn(async move {
             // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
             if let Ok(mut stream) = parser.provider.subscribe_logs(&transfer_filter).await {
-                while let Some(log) = stream.next().await {
-                    if log.topics.len() >= 3 {
-                        let from = Address::from(log.topics[1]);
-                        let to = Address::from(log.topics[2]);
+                loop {
+                    tokio::select! {
+                        _ = cancel_clone.cancelled() => {
+                            log::debug!("🛑 [BONDING_CURVE] Transfer event listener cancelled");
+                            break;
+                        }
+                        log_option = stream.next() => {
+                            match log_option {
+                                Some(log) => {
+                                    if log.topics.len() >= 3 {
+                                        let from = Address::from(log.topics[1]);
+                                        let to = Address::from(log.topics[2]);
 
-                        if from == bonding_curve || to == bonding_curve {
-                            if let Ok(Some(swap)) = parser
-                                .parse_bonding_curve_event(&log, token_address, bonding_curve)
-                                .await
-                            {
-                                callback_clone(swap);
+                                        if from == bonding_curve || to == bonding_curve {
+                                            if let Ok(Some(swap)) = parser
+                                                .parse_bonding_curve_event(&log, token_address, bonding_curve)
+                                                .await
+                                            {
+                                                callback_clone(swap);
+                                            }
+                                        }
+                                    }
+                                }
+                                None => {
+                                    log::warn!("⚠️ [BONDING_CURVE] Transfer stream ended");
+                                    break;
+                                }
                             }
                         }
                     }
@@ -252,6 +310,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         // Spawn PairCreated event listener on Factory
         let provider_clone = self.provider.clone();
         let pair_finder = PairFinder::new(provider_clone.clone());
+        let cancel_clone2 = cancel_token.clone();
         
         tokio::spawn(async move {
             // Watch for PairCreated events from the Factory
@@ -263,20 +322,36 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             
             // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
             if let Ok(mut stream) = provider_clone.subscribe_logs(&filter).await {
-                while let Some(log) = stream.next().await {
-                    if log.topics.len() >= 3 {
-                        let token0 = Address::from(log.topics[1]);
-                        let token1 = Address::from(log.topics[2]);
-                        
-                        // Check if either token matches our target token
-                        if token0 == token_address || token1 == token_address {
-                            log::info!("🎉 MIGRATION DETECTED! PairCreated event received!");
-                            log::info!("🔄 Switching from bonding curve to DEX monitoring...");
-                            
-                            // Send transaction hash and block number for migration event
-                            if let (Some(tx_hash), Some(block_num)) = (log.transaction_hash, log.block_number) {
-                                let _ = migration_tx.send((tx_hash, block_num.as_u64())).await;
-                                break;
+                loop {
+                    tokio::select! {
+                        _ = cancel_clone2.cancelled() => {
+                            log::debug!("🛑 [BONDING_CURVE] PairCreated event listener cancelled");
+                            break;
+                        }
+                        log_option = stream.next() => {
+                            match log_option {
+                                Some(log) => {
+                                    if log.topics.len() >= 3 {
+                                        let token0 = Address::from(log.topics[1]);
+                                        let token1 = Address::from(log.topics[2]);
+                                        
+                                        // Check if either token matches our target token
+                                        if token0 == token_address || token1 == token_address {
+                                            log::info!("🎉 MIGRATION DETECTED! PairCreated event received!");
+                                            log::info!("🔄 Switching from bonding curve to DEX monitoring...");
+                                            
+                                            // Send transaction hash and block number for migration event
+                                            if let (Some(tx_hash), Some(block_num)) = (log.transaction_hash, log.block_number) {
+                                                let _ = migration_tx.send((tx_hash, block_num.as_u64())).await;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                None => {
+                                    log::warn!("⚠️ [BONDING_CURVE] PairCreated stream ended");
+                                    break;
+                                }
                             }
                         }
                     }
@@ -345,13 +420,30 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                     let parser_clone = parser_for_dex.clone();
                     let pair_info_clone = pair_info.clone();
                     let callback_clone = swap_callback.clone();
+                    let cancel_clone3 = cancel_token.clone();
                     
                     tokio::spawn(async move {
                         // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
                         if let Ok(mut stream) = parser_clone.provider.subscribe_logs(&filter).await {
-                            while let Some(log) = stream.next().await {
-                                if let Ok(swap) = parser_clone.parse_swap_event(&log, &pair_info_clone).await {
-                                    callback_clone(swap);
+                            loop {
+                                tokio::select! {
+                                    _ = cancel_clone3.cancelled() => {
+                                        log::debug!("🛑 [MIGRATION_DEX] Swap event listener cancelled for pair {:?}", pair_info_clone.pair_address);
+                                        break;
+                                    }
+                                    log_option = stream.next() => {
+                                        match log_option {
+                                            Some(log) => {
+                                                if let Ok(swap) = parser_clone.parse_swap_event(&log, &pair_info_clone).await {
+                                                    callback_clone(swap);
+                                                }
+                                            }
+                                            None => {
+                                                log::warn!("⚠️ [MIGRATION_DEX] Stream ended for pair {:?}", pair_info_clone.pair_address);
+                                                break;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
