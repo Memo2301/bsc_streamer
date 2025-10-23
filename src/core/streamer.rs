@@ -83,13 +83,101 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
 
         log::debug!("🚀 Starting swap event streamer for token: {}", token_address_str);
 
-        // Check if token is on Four.meme bonding curve
+        // CRITICAL FIX: Check for DEX pairs FIRST before checking bonding curve
+        // This prevents migrated tokens from being incorrectly detected as still on bonding curve
+        // (The bonding curve check looks at historical transfers which may include pre-migration activity)
+        let pairs = self.pair_finder.find_pairs(token_address).await?;
+
+        if !pairs.is_empty() {
+            // Token has DEX pairs - monitor DEX
+            log::debug!("📡 Monitoring {} DEX pair(s) for real-time swaps", pairs.len());
+
+            self.is_streaming = true;
+
+            // Wrap callback in Arc once
+            let callback = Arc::new(swap_callback);
+
+            // Monitor each pair
+            for pair_info in pairs {
+                // Use correct swap topic based on pool type
+                let swap_topic = if pair_info.is_v3 {
+                    H256::from_str(SWAP_V3_TOPIC)?
+                } else {
+                    H256::from_str(SWAP_V2_TOPIC)?
+                };
+                
+                let pool_type = if pair_info.is_v3 { "V3" } else { "V2" };
+                
+                // Watch for new events only (from latest block forward)
+                let filter = Filter::new()
+                    .address(pair_info.pair_address)
+                    .topic0(swap_topic);
+
+                let parser = self.swap_parser.clone();
+                let pair_info_clone = pair_info.clone();
+                let callback_clone = callback.clone();
+                let cancel_clone = cancel_token.clone();
+
+                tokio::spawn(async move {
+                    log::debug!("🔄 [SWAP_STREAMER] Starting {} subscription task for pair {:?}", pool_type, pair_info_clone.pair_address);
+                    
+                    // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
+                    match parser.provider.subscribe_logs(&filter).await {
+                        Ok(mut stream) => {
+                            log::debug!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?}", pool_type, pair_info_clone.pair_address);
+                            
+                            let mut event_count = 0;
+                            loop {
+                                tokio::select! {
+                                    // Listen for cancel signal
+                                    _ = cancel_clone.cancelled() => {
+                                        log::debug!("🛑 [SWAP_STREAMER] {} subscription for pair {:?} cancelled after {} events", pool_type, pair_info_clone.pair_address, event_count);
+                                        break;
+                                    }
+                                    // Process stream events
+                                    log_option = stream.next() => {
+                                        match log_option {
+                                            Some(log) => {
+                                                event_count += 1;
+                                                log::debug!("📥 [SWAP_STREAMER] Received {} log #{} for pair {:?}", pool_type, event_count, pair_info_clone.pair_address);
+                                                
+                                                match parser.parse_swap_event(&log, &pair_info_clone).await {
+                                                    Ok(swap) => {
+                                                        log::debug!("✅ [SWAP_STREAMER] Successfully parsed {} swap event #{}", pool_type, event_count);
+                                                        callback_clone(swap);
+                                                    }
+                                                    Err(e) => {
+                                                        log::error!("❌ [SWAP_STREAMER] Failed to parse {} swap event: {}", pool_type, e);
+                                                    }
+                                                }
+                                            }
+                                            None => {
+                                                log::warn!("⚠️ [SWAP_STREAMER] {} stream ended for pair {:?} after {} events", pool_type, pair_info_clone.pair_address, event_count);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("❌ [SWAP_STREAMER] Failed to create {} subscription for pair {:?}: {}", pool_type, pair_info_clone.pair_address, e);
+                            log::error!("   Error details: {:?}", e);
+                        }
+                    }
+                });
+
+                log::debug!("  ✅ Listening to {} {} pair: {:?}", pool_type, pair_info.base_token_symbol, pair_info.pair_address);
+            }
+
+            log::debug!("✨ Streamer is now active. Waiting for swap events...");
+
+            return Ok(());
+        }
+
+        // No DEX pairs found - check if token is on Four.meme bonding curve
         if let Ok(has_activity) = self.check_bonding_curve(&token_address).await {
             if has_activity {
-                log::info!("🎯 Token is on Four.meme bonding curve!");
-                log::info!("📡 Monitoring bonding curve trades...");
-                log::info!("🔄 Watching for PairCreated event to auto-switch to DEX");
-
                 self.is_streaming = true;
                 self.start_bonding_curve_with_migration_detection_and_callback(
                     token_address,
@@ -102,96 +190,8 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             }
         }
 
-        // Find DEX pairs
-        let pairs = self.pair_finder.find_pairs(token_address).await?;
-
-        if pairs.is_empty() {
-            return Err(anyhow!("No trading pairs found on DEX and not on bonding curve"));
-        }
-
-        log::debug!("📡 Monitoring {} DEX pair(s) for real-time swaps", pairs.len());
-
-        self.is_streaming = true;
-
-        // Wrap callback in Arc once
-        let callback = Arc::new(swap_callback);
-
-        // Monitor each pair
-        for pair_info in pairs {
-            // Use correct swap topic based on pool type
-            let swap_topic = if pair_info.is_v3 {
-                H256::from_str(SWAP_V3_TOPIC)?
-            } else {
-                H256::from_str(SWAP_V2_TOPIC)?
-            };
-            
-            let pool_type = if pair_info.is_v3 { "V3" } else { "V2" };
-            
-            // Watch for new events only (from latest block forward)
-            let filter = Filter::new()
-                .address(pair_info.pair_address)
-                .topic0(swap_topic);
-
-            let parser = self.swap_parser.clone();
-            let pair_info_clone = pair_info.clone();
-            let callback_clone = callback.clone();
-            let cancel_clone = cancel_token.clone();
-
-            tokio::spawn(async move {
-                log::debug!("🔄 [SWAP_STREAMER] Starting {} subscription task for pair {:?}", pool_type, pair_info_clone.pair_address);
-                
-                // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
-                match parser.provider.subscribe_logs(&filter).await {
-                    Ok(mut stream) => {
-                        log::debug!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?}", pool_type, pair_info_clone.pair_address);
-                        
-                        let mut event_count = 0;
-                        loop {
-                            tokio::select! {
-                                // Listen for cancel signal
-                                _ = cancel_clone.cancelled() => {
-                                    log::debug!("🛑 [SWAP_STREAMER] {} subscription for pair {:?} cancelled after {} events", pool_type, pair_info_clone.pair_address, event_count);
-                                    break;
-                                }
-                                // Process stream events
-                                log_option = stream.next() => {
-                                    match log_option {
-                                        Some(log) => {
-                                            event_count += 1;
-                                            log::debug!("📥 [SWAP_STREAMER] Received {} log #{} for pair {:?}", pool_type, event_count, pair_info_clone.pair_address);
-                                            
-                                            match parser.parse_swap_event(&log, &pair_info_clone).await {
-                                                Ok(swap) => {
-                                                    log::debug!("✅ [SWAP_STREAMER] Successfully parsed {} swap event #{}", pool_type, event_count);
-                                                    callback_clone(swap);
-                                                }
-                                                Err(e) => {
-                                                    log::error!("❌ [SWAP_STREAMER] Failed to parse {} swap event: {}", pool_type, e);
-                                                }
-                                            }
-                                        }
-                                        None => {
-                                            log::warn!("⚠️ [SWAP_STREAMER] {} stream ended for pair {:?} after {} events", pool_type, pair_info_clone.pair_address, event_count);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("❌ [SWAP_STREAMER] Failed to create {} subscription for pair {:?}: {}", pool_type, pair_info_clone.pair_address, e);
-                        log::error!("   Error details: {:?}", e);
-                    }
-                }
-            });
-
-            log::debug!("  ✅ Listening to {} {} pair: {:?}", pool_type, pair_info.base_token_symbol, pair_info.pair_address);
-        }
-
-        log::debug!("✨ Streamer is now active. Waiting for swap events...");
-
-        Ok(())
+        // No DEX pairs and not on bonding curve
+        return Err(anyhow!("No trading pairs found on DEX and not on bonding curve"));
     }
 
     /// Public method to check if a token is on the bonding curve (for library users)

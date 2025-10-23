@@ -62,6 +62,8 @@ impl<M: Middleware + 'static> PairFinder<M> {
         let factory = Contract::new(get_factory_address(), abi, self.provider.clone());
         let mut pairs = Vec::new();
 
+        log::debug!("🔍 Checking V2 pairs for token {:?} against {} base tokens", token_address, base_tokens.len());
+
         for (symbol, base_token_address) in base_tokens {
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
@@ -71,6 +73,7 @@ impl<M: Middleware + 'static> PairFinder<M> {
                 .await
             {
                 Ok(pair_address) if !pair_address.is_zero() => {
+                    log::info!("✅ Found V2 pair with {}: {:?}", symbol, pair_address);
                     pairs.push(PairInfo {
                         pair_address,
                         token: token_address,
@@ -79,8 +82,12 @@ impl<M: Middleware + 'static> PairFinder<M> {
                         is_v3: false,
                     });
                 }
-                Ok(_) => {}
-                Err(_) => {}
+                Ok(pair_address) => {
+                    log::debug!("  ⚪ No V2 pair with {} (returned zero address: {:?})", symbol, pair_address);
+                }
+                Err(e) => {
+                    log::error!("❌ Error checking V2 pair with {}: {:?}", symbol, e);
+                }
             }
         }
 
@@ -91,6 +98,8 @@ impl<M: Middleware + 'static> PairFinder<M> {
         let abi: Abi = serde_json::from_str(FACTORY_V3_ABI)?;
         let factory = Contract::new(get_v3_factory_address(), abi, self.provider.clone());
         let mut pairs = Vec::new();
+
+        log::debug!("🔍 Checking V3 pairs for token {:?} against {} base tokens", token_address, base_tokens.len());
 
         for (symbol, base_token_address) in base_tokens {
             // Try each fee tier
@@ -103,6 +112,7 @@ impl<M: Middleware + 'static> PairFinder<M> {
                     .await
                 {
                     Ok(pool_address) if !pool_address.is_zero() => {
+                        log::info!("✅ Found V3 pool with {} (fee: {}): {:?}", symbol, fee, pool_address);
                         pairs.push(PairInfo {
                             pair_address: pool_address,
                             token: token_address,
@@ -112,8 +122,12 @@ impl<M: Middleware + 'static> PairFinder<M> {
                         });
                         break; // Found a pool for this base token, no need to check other fees
                     }
-                    Ok(_) => {}
-                    Err(_) => {}
+                    Ok(_) => {
+                        log::debug!("  ⚪ No V3 pool with {} (fee: {})", symbol, fee);
+                    }
+                    Err(e) => {
+                        log::error!("❌ Error checking V3 pool with {} (fee: {}): {:?}", symbol, fee, e);
+                    }
                 }
             }
         }
