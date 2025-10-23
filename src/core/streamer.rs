@@ -121,52 +121,78 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                 let cancel_clone = cancel_token.clone();
 
                 tokio::spawn(async move {
-                    log::info!("🔄 [SWAP_STREAMER] Starting {} subscription task for pair {:?} with topic {:?}", pool_type, pair_info_clone.pair_address, swap_topic);
+                    log::info!("🔄 [SWAP_STREAMER] Starting {} subscription for pair {:?}", pool_type, pair_info_clone.pair_address);
                     
                     // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
                     match parser.provider.subscribe_logs(&filter).await {
                         Ok(mut stream) => {
                             log::info!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?}", pool_type, pair_info_clone.pair_address);
                             
-                            let mut event_count = 0;
+                            let mut events_received = 0;
+                            let mut events_parsed = 0;
+                            let mut events_failed = 0;
                             let mut last_log_time = std::time::Instant::now();
+                            let start_time = std::time::Instant::now();
                             
                             loop {
                                 // Log heartbeat every 30 seconds to show subscription is alive
                                 if last_log_time.elapsed().as_secs() >= 30 {
-                                    log::info!("💓 [SWAP_STREAMER] {} subscription alive for {:?} ({} events received)", 
-                                        pool_type, pair_info_clone.pair_address, event_count);
+                                    let uptime = start_time.elapsed();
+                                    let rate = if uptime.as_secs() > 0 {
+                                        events_received as f64 / uptime.as_secs() as f64
+                                    } else {
+                                        0.0
+                                    };
+                                    
+                                    log::info!("💓 [SWAP_STREAMER] {} pair {:?} - Received: {}, Parsed: {}, Failed: {}, Rate: {:.2}/s", 
+                                        pool_type, pair_info_clone.pair_address, events_received, events_parsed, events_failed, rate);
                                     last_log_time = std::time::Instant::now();
                                 }
                                 
                                 tokio::select! {
                                     // Listen for cancel signal
                                     _ = cancel_clone.cancelled() => {
-                                        log::info!("🛑 [SWAP_STREAMER] {} subscription for pair {:?} cancelled after {} events", pool_type, pair_info_clone.pair_address, event_count);
+                                        log::info!("🛑 [SWAP_STREAMER] {} subscription cancelled - Received: {}, Parsed: {}, Failed: {}", 
+                                            pool_type, events_received, events_parsed, events_failed);
                                         break;
                                     }
                                     // Process stream events
                                     log_option = stream.next() => {
                                         match log_option {
                                             Some(log) => {
-                                                event_count += 1;
-                                                log::info!("📥 [SWAP_STREAMER] Received {} log #{} for pair {:?} - tx: {:?}", 
-                                                    pool_type, event_count, pair_info_clone.pair_address, log.transaction_hash);
+                                                events_received += 1;
+                                                let receive_time = std::time::Instant::now();
+                                                log::debug!("📥 [SWAP_STREAMER] Received {} log #{} for pair {:?} - tx: {:?}", 
+                                                    pool_type, events_received, pair_info_clone.pair_address, log.transaction_hash);
                                                 
+                                                let parse_start = std::time::Instant::now();
                                                 match parser.parse_swap_event(&log, &pair_info_clone).await {
                                                     Ok(swap) => {
-                                                        log::info!("✅ [SWAP_STREAMER] Successfully parsed {} swap event #{}: {:?} {} @ {:.10} {}", 
-                                                            pool_type, event_count, swap.trade_type, swap.token.amount, 
+                                                        events_parsed += 1;
+                                                        let parse_duration = parse_start.elapsed();
+                                                        log::debug!("✅ [SWAP_STREAMER] Parsed {} event #{} in {:?}: {:?} {} @ {:.10} {}", 
+                                                            pool_type, events_received, parse_duration, swap.trade_type, swap.token.amount, 
                                                             swap.price.value, swap.price.base_token);
+                                                        
+                                                        let callback_start = std::time::Instant::now();
                                                         callback_clone(swap);
+                                                        let callback_duration = callback_start.elapsed();
+                                                        
+                                                        let total_duration = receive_time.elapsed();
+                                                        if total_duration.as_millis() > 500 {
+                                                            log::warn!("⚠️  [SWAP_STREAMER] Slow event processing: parse={:?}, callback={:?}, total={:?}", 
+                                                                parse_duration, callback_duration, total_duration);
+                                                        }
                                                     }
                                                     Err(e) => {
+                                                        events_failed += 1;
                                                         log::error!("❌ [SWAP_STREAMER] Failed to parse {} swap event: {}", pool_type, e);
                                                     }
                                                 }
                                             }
                                             None => {
-                                                log::warn!("⚠️ [SWAP_STREAMER] {} stream ended for pair {:?} after {} events", pool_type, pair_info_clone.pair_address, event_count);
+                                                log::warn!("⚠️ [SWAP_STREAMER] {} stream ended - Received: {}, Parsed: {}, Failed: {}", 
+                                                    pool_type, events_received, events_parsed, events_failed);
                                                 break;
                                             }
                                         }
