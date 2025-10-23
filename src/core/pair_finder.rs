@@ -10,6 +10,9 @@ use std::sync::Arc;
 use crate::config::{get_base_tokens, get_factory_address, get_v3_factory_address};
 use crate::types::PairInfo;
 
+// Minimum liquidity threshold in USD
+const MIN_LIQUIDITY_USD: f64 = 5000.0;
+
 const FACTORY_V2_ABI: &str = r#"[
     {"constant":true,"inputs":[{"name":"tokenA","type":"address"},{"name":"tokenB","type":"address"}],"name":"getPair","outputs":[{"name":"pair","type":"address"}],"type":"function"}
 ]"#;
@@ -49,12 +52,92 @@ impl<M: Middleware + 'static> PairFinder<M> {
             pairs.extend(v3_pairs);
         }
 
+        // Filter pairs by liquidity (minimum $5000 USD)
+        let token_str = format!("{:?}", token_address);
+        let pairs_with_liquidity = self.filter_by_liquidity(pairs, &token_str).await;
+
         // Only show "no pairs" message if we checked both factories and found nothing
-        if pairs.is_empty() {
-            log::info!("⚠️  No pairs found");
+        if pairs_with_liquidity.is_empty() {
+            log::info!("⚠️  No pairs found with sufficient liquidity (min ${:.0} USD)", MIN_LIQUIDITY_USD);
         }
 
-        Ok(pairs)
+        Ok(pairs_with_liquidity)
+    }
+    
+    /// Filter pairs by liquidity using DexScreener API
+    async fn filter_by_liquidity(&self, pairs: Vec<PairInfo>, token_address: &str) -> Vec<PairInfo> {
+        if pairs.is_empty() {
+            return pairs;
+        }
+        
+        // Query DexScreener for liquidity data
+        let url = format!("https://api.dexscreener.com/latest/dex/tokens/{}", token_address);
+        
+        let liquidity_map = match reqwest::Client::new()
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(response) => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(data) => {
+                        let mut map = std::collections::HashMap::new();
+                        
+                        if let Some(pairs_data) = data["pairs"].as_array() {
+                            for pair in pairs_data {
+                                if pair["chainId"] == "bsc" {
+                                    if let (Some(pair_addr), Some(liquidity)) = (
+                                        pair["pairAddress"].as_str(),
+                                        pair["liquidity"]["usd"].as_f64()
+                                    ) {
+                                        let normalized_addr = pair_addr.to_lowercase();
+                                        map.insert(normalized_addr, liquidity);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        map
+                    }
+                    Err(e) => {
+                        log::warn!("⚠️  Failed to parse DexScreener response: {}", e);
+                        std::collections::HashMap::new()
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("⚠️  Failed to fetch liquidity from DexScreener: {}", e);
+                std::collections::HashMap::new()
+            }
+        };
+        
+        // Filter pairs by liquidity
+        let mut filtered_pairs = Vec::new();
+        
+        for pair in pairs {
+            let pair_addr_str = format!("{:?}", pair.pair_address).to_lowercase();
+            
+            if let Some(&liquidity_usd) = liquidity_map.get(&pair_addr_str) {
+                if liquidity_usd >= MIN_LIQUIDITY_USD {
+                    let pool_type = if pair.is_v3 { "V3" } else { "V2" };
+                    log::info!("✅ {} pair {} with {} has sufficient liquidity: ${:.0} USD", 
+                        pool_type, &pair_addr_str[..10], pair.base_token_symbol, liquidity_usd);
+                    filtered_pairs.push(pair);
+                } else {
+                    let pool_type = if pair.is_v3 { "V3" } else { "V2" };
+                    log::warn!("❌ Filtered out {} pair {} with {} - insufficient liquidity: ${:.2} USD (min: ${:.0})", 
+                        pool_type, &pair_addr_str[..10], pair.base_token_symbol, liquidity_usd, MIN_LIQUIDITY_USD);
+                }
+            } else {
+                // If we can't get liquidity data, include the pair with a warning
+                log::warn!("⚠️  Could not verify liquidity for pair {} with {}, including anyway", 
+                    &pair_addr_str[..10], pair.base_token_symbol);
+                filtered_pairs.push(pair);
+            }
+        }
+        
+        filtered_pairs
     }
 
     async fn find_v2_pairs(&self, token_address: Address, base_tokens: &[(String, Address)]) -> Result<Vec<PairInfo>> {
