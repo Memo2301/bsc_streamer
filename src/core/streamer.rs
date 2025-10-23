@@ -162,6 +162,13 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                             Some(log) => {
                                                 events_received += 1;
                                                 let receive_time = std::time::Instant::now();
+                                                
+                                                // Log block number to detect batching
+                                                if events_received == 1 || events_received % 100 == 0 {
+                                                    log::info!("📊 [SWAP_STREAMER] Event #{}: block={:?}, tx={:?}", 
+                                                        events_received, log.block_number, log.transaction_hash);
+                                                }
+                                                
                                                 log::debug!("📥 [SWAP_STREAMER] Received {} log #{} for pair {:?} - tx: {:?}", 
                                                     pool_type, events_received, pair_info_clone.pair_address, log.transaction_hash);
                                                 
