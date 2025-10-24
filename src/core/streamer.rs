@@ -258,47 +258,70 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         let bonding_curve = get_bonding_curve_address();
         log::info!("🔍 [BONDING_CURVE] Checking for Four.meme activity - Bonding Curve: {:?}", bonding_curve);
 
-        let transfer_topic = H256::from_str(TRANSFER_TOPIC)?;
-
-        // Check recent blocks for activity (limit to 5000 blocks to avoid RPC limits)
+        // OPTIMIZED: Check only the last 100 blocks (much more efficient than 5000)
+        // This is enough to detect recent activity since Four.meme tokens are actively traded
         let current_block = self.provider.get_block_number().await?;
-        let from_block = current_block.saturating_sub(U64::from(5000));
+        let from_block = current_block.saturating_sub(U64::from(100));
 
-        log::info!("🔍 [BONDING_CURVE] Scanning blocks {} to {} (last 5000 blocks)", from_block, current_block);
+        log::info!("🔍 [BONDING_CURVE] Scanning last 100 blocks ({} to {})", from_block, current_block);
 
-        let filter = Filter::new()
-            .address(*token_address)
-            .topic0(transfer_topic)
-            .from_block(from_block)
-            .to_block(current_block);
-
-        match self.provider.get_logs(&filter).await {
-            Ok(logs) => {
-                log::info!("🔍 [BONDING_CURVE] Found {} Transfer events for token", logs.len());
-                
-                // Check if any transfers involve the bonding curve
-                for (i, log) in logs.iter().take(50).enumerate() {
-                    if log.topics.len() >= 3 {
-                        let from = Address::from(log.topics[1]);
-                        let to = Address::from(log.topics[2]);
-
-                        if i < 5 {
-                            log::debug!("  Transfer #{}: from={:?}, to={:?}", i + 1, from, to);
-                        }
-
-                        if from == bonding_curve || to == bonding_curve {
-                            log::info!("✅ [BONDING_CURVE] Found Four.meme bonding curve activity! Transfer: from={:?}, to={:?}", from, to);
-                            return Ok(true);
-                        }
-                    }
-                }
-
-                log::warn!("⚠️ [BONDING_CURVE] No bonding curve activity found in {} Transfer events", logs.len());
-                Ok(false)
+        // Query token balance on bonding curve contract
+        // If balance > 0, token is still on bonding curve
+        let balance_abi: ethers::abi::Abi = serde_json::from_str(r#"[
+            {"constant":true,"inputs":[{"name":"account","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"type":"function"}
+        ]"#)?;
+        
+        let token_contract = ethers::contract::Contract::new(*token_address, balance_abi, self.provider.clone());
+        
+        match token_contract
+            .method::<_, ethers::types::U256>("balanceOf", bonding_curve)?
+            .call()
+            .await
+        {
+            Ok(balance) if balance > ethers::types::U256::zero() => {
+                log::info!("✅ [BONDING_CURVE] Token has balance on bonding curve: {} tokens", balance);
+                return Ok(true);
+            }
+            Ok(_) => {
+                log::info!("⚪ [BONDING_CURVE] Token has zero balance on bonding curve - likely migrated");
+                return Ok(false);
             }
             Err(e) => {
-                log::error!("❌ [BONDING_CURVE] Failed to fetch Transfer logs: {}", e);
-                Ok(false)
+                log::warn!("⚠️ [BONDING_CURVE] Failed to check bonding curve balance: {}, falling back to Transfer scan", e);
+                
+                // Fallback: Check recent Transfer events (much faster with only 100 blocks)
+                let transfer_topic = H256::from_str(TRANSFER_TOPIC)?;
+                let filter = Filter::new()
+                    .address(*token_address)
+                    .topic0(transfer_topic)
+                    .from_block(from_block)
+                    .to_block(current_block);
+
+                match self.provider.get_logs(&filter).await {
+                    Ok(logs) => {
+                        log::info!("🔍 [BONDING_CURVE] Found {} Transfer events in last 100 blocks", logs.len());
+                        
+                        // Check if any transfers involve the bonding curve
+                        for log in logs.iter().take(50) {
+                            if log.topics.len() >= 3 {
+                                let from = Address::from(log.topics[1]);
+                                let to = Address::from(log.topics[2]);
+
+                                if from == bonding_curve || to == bonding_curve {
+                                    log::info!("✅ [BONDING_CURVE] Found Four.meme bonding curve activity in recent transfers");
+                                    return Ok(true);
+                                }
+                            }
+                        }
+
+                        log::warn!("⚠️ [BONDING_CURVE] No bonding curve activity found in {} recent Transfer events", logs.len());
+                        Ok(false)
+                    }
+                    Err(e) => {
+                        log::error!("❌ [BONDING_CURVE] Failed to fetch Transfer logs: {}", e);
+                        Ok(false)
+                    }
+                }
             }
         }
     }
@@ -340,38 +363,84 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         let callback_clone = swap_callback.clone();
         let cancel_clone = cancel_token.clone();
         tokio::spawn(async move {
+            log::info!("🔄 [BONDING_CURVE] Creating subscription for Transfer events on token {:?}", token_address);
+            
             // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
-            if let Ok(mut stream) = parser.provider.subscribe_logs(&transfer_filter).await {
-                loop {
-                    tokio::select! {
-                        _ = cancel_clone.cancelled() => {
-                            log::debug!("🛑 [BONDING_CURVE] Transfer event listener cancelled");
-                            break;
+            match parser.provider.subscribe_logs(&transfer_filter).await {
+                Ok(mut stream) => {
+                    log::info!("✅ [BONDING_CURVE] Transfer subscription created successfully for token {:?}", token_address);
+                    
+                    let mut events_received = 0;
+                    let mut events_parsed = 0;
+                    let mut events_filtered = 0;
+                    let mut last_log_time = std::time::Instant::now();
+                    let start_time = std::time::Instant::now();
+                    
+                    loop {
+                        // Log heartbeat every 30 seconds
+                        if last_log_time.elapsed().as_secs() >= 30 {
+                            let uptime = start_time.elapsed();
+                            let rate = if uptime.as_secs() > 0 {
+                                events_received as f64 / uptime.as_secs() as f64
+                            } else {
+                                0.0
+                            };
+                            
+                            log::info!("💓 [BONDING_CURVE] Token {:?} - Received: {}, Bonding Curve: {}, Parsed: {}, Rate: {:.2}/s", 
+                                token_address, events_received, events_filtered, events_parsed, rate);
+                            last_log_time = std::time::Instant::now();
                         }
-                        log_option = stream.next() => {
-                            match log_option {
-                                Some(log) => {
-                                    if log.topics.len() >= 3 {
-                                        let from = Address::from(log.topics[1]);
-                                        let to = Address::from(log.topics[2]);
+                        
+                        tokio::select! {
+                            _ = cancel_clone.cancelled() => {
+                                log::info!("🛑 [BONDING_CURVE] Transfer listener cancelled - Received: {}, Bonding Curve: {}, Parsed: {}", 
+                                    events_received, events_filtered, events_parsed);
+                                break;
+                            }
+                            log_option = stream.next() => {
+                                match log_option {
+                                    Some(log) => {
+                                        events_received += 1;
+                                        
+                                        if log.topics.len() >= 3 {
+                                            let from = Address::from(log.topics[1]);
+                                            let to = Address::from(log.topics[2]);
 
-                                        if from == bonding_curve || to == bonding_curve {
-                                            if let Ok(Some(swap)) = parser
-                                                .parse_bonding_curve_event(&log, token_address, bonding_curve)
-                                                .await
-                                            {
-                                                callback_clone(swap);
+                                            if from == bonding_curve || to == bonding_curve {
+                                                events_filtered += 1;
+                                                log::debug!("📥 [BONDING_CURVE] Event #{}: Transfer involving bonding curve - tx: {:?}", 
+                                                    events_filtered, log.transaction_hash);
+                                                
+                                                match parser.parse_bonding_curve_event(&log, token_address, bonding_curve).await {
+                                                    Ok(Some(swap)) => {
+                                                        events_parsed += 1;
+                                                        log::info!("✅ [BONDING_CURVE] Parsed swap #{}: {} tokens at {} {}", 
+                                                            events_parsed, swap.token.amount, swap.price.value, swap.price.base_token);
+                                                        callback_clone(swap);
+                                                    }
+                                                    Ok(None) => {
+                                                        log::debug!("⏭️ [BONDING_CURVE] Transfer not a valid swap event");
+                                                    }
+                                                    Err(e) => {
+                                                        log::error!("❌ [BONDING_CURVE] Failed to parse event: {}", e);
+                                                    }
+                                                }
                                             }
                                         }
                                     }
-                                }
-                                None => {
-                                    log::warn!("⚠️ [BONDING_CURVE] Transfer stream ended");
-                                    break;
+                                    None => {
+                                        log::warn!("⚠️ [BONDING_CURVE] Transfer stream ended - Received: {}, Parsed: {}", 
+                                            events_received, events_parsed);
+                                        break;
+                                    }
                                 }
                             }
                         }
                     }
+                }
+                Err(e) => {
+                    log::error!("❌ [BONDING_CURVE] Failed to create Transfer subscription for token {:?}: {}", token_address, e);
+                    log::error!("   Error details: {:?}", e);
                 }
             }
         });
