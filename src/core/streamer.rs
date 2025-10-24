@@ -152,7 +152,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                 tokio::select! {
                                     // Listen for cancel signal
                                     _ = cancel_clone.cancelled() => {
-                                        log::info!("🛑 [SWAP_STREAMER] {} subscription cancelled - Received: {}, Parsed: {}, Failed: {}", 
+                                        log::debug!("🛑 [SWAP_STREAMER] {} subscription cancelled - Received: {}, Parsed: {}, Failed: {}", 
                                             pool_type, events_received, events_parsed, events_failed);
                                         break;
                                     }

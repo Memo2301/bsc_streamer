@@ -112,13 +112,13 @@ where
             // This ensures the token stays in the map as long as subscriptions are active
             cancel_token_clone.cancelled().await;
             
-            log::info!("🔄 [MULTI_TOKEN_STREAMER] Cancellation confirmed for {:?}, cleaning up from map", address);
+            log::debug!("🔄 [MULTI_TOKEN_STREAMER] Cancellation confirmed for {:?}, cleaning up from map", address);
             
             // Clean up from tokens map only after cancellation
             let mut tokens = tokens_clone.write().await;
             tokens.remove(&address);
             
-            log::info!("✅ [MULTI_TOKEN_STREAMER] Token {:?} removed from map after cancellation", address);
+            log::debug!("✅ [MULTI_TOKEN_STREAMER] Token {:?} removed from map after cancellation", address);
         });
 
         Ok(())
@@ -140,20 +140,20 @@ where
     /// ```
     pub async fn remove_token(&self, token_address: &str) -> Result<()> {
         let address = Address::from_str(token_address)?;
-        log::info!("🔄 [MULTI_TOKEN_STREAMER] Attempting to remove token {:?}", address);
+        log::debug!("🔄 [MULTI_TOKEN_STREAMER] Attempting to remove token {:?}", address);
 
         let cancel_token = {
             let tokens = self.tokens.read().await;
             let token_exists = tokens.contains_key(&address);
-            log::info!("🔄 [MULTI_TOKEN_STREAMER] Token {:?} exists in map: {}", address, token_exists);
+            log::debug!("🔄 [MULTI_TOKEN_STREAMER] Token {:?} exists in map: {}", address, token_exists);
             tokens.get(&address).cloned()
         };
 
         match cancel_token {
             Some(token) => {
-                log::info!("🔄 [MULTI_TOKEN_STREAMER] Cancelling token {:?}", address);
+                log::debug!("🔄 [MULTI_TOKEN_STREAMER] Cancelling token {:?}", address);
                 token.cancel();
-                log::info!("✅ [MULTI_TOKEN_STREAMER] Token {:?} cancelled successfully", address);
+                log::debug!("✅ [MULTI_TOKEN_STREAMER] Token {:?} cancelled successfully", address);
                 Ok(())
             }
             None => {
