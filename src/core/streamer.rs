@@ -14,9 +14,10 @@ use crate::types::{MigrationEvent, Platform, SwapEvent};
 
 const TRANSFER_TOPIC: &str = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const SWAP_V2_TOPIC: &str = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822";
-// PancakeSwap V3 Swap event with protocolFees:
-// Swap(address indexed sender,address indexed recipient,int256 amount0,int256 amount1,uint160 sqrtPriceX96,uint128 liquidity,int24 tick,uint128 protocolFeesToken0,uint128 protocolFeesToken1)
-const SWAP_V3_TOPIC: &str = "0xbd3314738ef3546c5fb0b02c304196e934faf0cfafd027f586e5e2970ad0c47a";
+// 🔥 CRITICAL FIX: PancakeSwap V3 Swap event (9 params, NO indexed sender/recipient)
+// Swap(address,address,int256,int256,uint160,uint128,int24,uint128,uint128)
+// Parameters: sender, recipient, amount0, amount1, sqrtPriceX96, liquidity, tick, protocolFeesToken0, protocolFeesToken1
+const SWAP_V3_TOPIC: &str = "0x19b47279256b2a23a1665c810c8d55a1758940ee09377d4f8d26497a3577dc83";
 const PAIR_CREATED_TOPIC: &str = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
 
 pub struct SwapStreamer<M> {
