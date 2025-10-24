@@ -108,9 +108,17 @@ where
                 log::error!("Error monitoring token {:?}: {}", address, e);
             }
 
-            // Clean up from tokens map
+            // Wait for cancellation before cleaning up from tokens map
+            // This ensures the token stays in the map as long as subscriptions are active
+            cancel_token_clone.cancelled().await;
+            
+            log::info!("🔄 [MULTI_TOKEN_STREAMER] Cancellation confirmed for {:?}, cleaning up from map", address);
+            
+            // Clean up from tokens map only after cancellation
             let mut tokens = tokens_clone.write().await;
             tokens.remove(&address);
+            
+            log::info!("✅ [MULTI_TOKEN_STREAMER] Token {:?} removed from map after cancellation", address);
         });
 
         Ok(())
