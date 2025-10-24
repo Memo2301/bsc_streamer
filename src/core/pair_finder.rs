@@ -56,10 +56,8 @@ impl<M: Middleware + 'static> PairFinder<M> {
         let token_str = format!("{:?}", token_address);
         let pairs_with_liquidity = self.filter_by_liquidity(pairs, &token_str).await;
 
-        // Only show "no pairs" message if we checked both factories and found nothing
-        if pairs_with_liquidity.is_empty() {
-            log::info!("⚠️  No pairs found with sufficient liquidity (min ${:.0} USD)", MIN_LIQUIDITY_USD);
-        }
+        // Don't log "no pairs found" here - let the caller (streamer.rs) decide
+        // This prevents misleading messages for Four.meme tokens that are on bonding curve
 
         Ok(pairs_with_liquidity)
     }

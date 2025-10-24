@@ -91,8 +91,8 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         let pairs = self.pair_finder.find_pairs(token_address).await?;
 
         if !pairs.is_empty() {
-            // Token has DEX pairs - monitor DEX
-            log::debug!("📡 Monitoring {} DEX pair(s) for real-time swaps", pairs.len());
+            // Token has DEX pairs - monitor DEX (PancakeSwap V2/V3)
+            log::info!("✅ Found {} DEX pair(s) - subscribing to PancakeSwap events", pairs.len());
 
             self.is_streaming = true;
 
@@ -227,8 +227,11 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         }
 
         // No DEX pairs found - check if token is on Four.meme bonding curve
+        log::info!("🔍 No DEX pairs found - checking Four.meme bonding curve...");
+        
         if let Ok(has_activity) = self.check_bonding_curve(&token_address).await {
             if has_activity {
+                log::info!("✅ Token is on Four.meme bonding curve - subscribing to bonding curve events");
                 self.is_streaming = true;
                 self.start_bonding_curve_with_migration_detection_and_callback(
                     token_address,
@@ -242,6 +245,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         }
 
         // No DEX pairs and not on bonding curve
+        log::warn!("⚠️ No pairs found with sufficient liquidity on DEX and no Four.meme bonding curve activity detected");
         return Err(anyhow!("No trading pairs found on DEX and not on bonding curve"));
     }
 
@@ -251,14 +255,16 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
     }
 
     async fn check_bonding_curve(&self, token_address: &Address) -> Result<bool> {
-        log::debug!("🔍 Checking Four.meme bonding curve for token...");
-
         let bonding_curve = get_bonding_curve_address();
+        log::info!("🔍 [BONDING_CURVE] Checking for Four.meme activity - Bonding Curve: {:?}", bonding_curve);
+
         let transfer_topic = H256::from_str(TRANSFER_TOPIC)?;
 
         // Check recent blocks for activity (limit to 5000 blocks to avoid RPC limits)
         let current_block = self.provider.get_block_number().await?;
         let from_block = current_block.saturating_sub(U64::from(5000));
+
+        log::info!("🔍 [BONDING_CURVE] Scanning blocks {} to {} (last 5000 blocks)", from_block, current_block);
 
         let filter = Filter::new()
             .address(*token_address)
@@ -266,23 +272,35 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             .from_block(from_block)
             .to_block(current_block);
 
-        let logs = self.provider.get_logs(&filter).await.unwrap_or_else(|_| vec![]);
+        match self.provider.get_logs(&filter).await {
+            Ok(logs) => {
+                log::info!("🔍 [BONDING_CURVE] Found {} Transfer events for token", logs.len());
+                
+                // Check if any transfers involve the bonding curve
+                for (i, log) in logs.iter().take(50).enumerate() {
+                    if log.topics.len() >= 3 {
+                        let from = Address::from(log.topics[1]);
+                        let to = Address::from(log.topics[2]);
 
-        // Check if any transfers involve the bonding curve
-        for log in logs.iter().take(50) {
-            if log.topics.len() >= 3 {
-                let from = Address::from(log.topics[1]);
-                let to = Address::from(log.topics[2]);
+                        if i < 5 {
+                            log::debug!("  Transfer #{}: from={:?}, to={:?}", i + 1, from, to);
+                        }
 
-                if from == bonding_curve || to == bonding_curve {
-                    log::debug!("  ✅ Found Four.meme bonding curve activity");
-                    return Ok(true);
+                        if from == bonding_curve || to == bonding_curve {
+                            log::info!("✅ [BONDING_CURVE] Found Four.meme bonding curve activity! Transfer: from={:?}, to={:?}", from, to);
+                            return Ok(true);
+                        }
+                    }
                 }
+
+                log::warn!("⚠️ [BONDING_CURVE] No bonding curve activity found in {} Transfer events", logs.len());
+                Ok(false)
+            }
+            Err(e) => {
+                log::error!("❌ [BONDING_CURVE] Failed to fetch Transfer logs: {}", e);
+                Ok(false)
             }
         }
-
-        log::debug!("  ⚪ No Four.meme bonding curve activity found");
-        Ok(false)
     }
 
     async fn start_bonding_curve_with_migration_detection_and_callback<F, G>(
