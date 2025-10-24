@@ -63,6 +63,7 @@ impl<M: Middleware + 'static> PairFinder<M> {
     }
     
     /// Filter pairs by liquidity using DexScreener API
+    /// Only includes pairs with unverified liquidity if no pairs with verified sufficient liquidity exist
     async fn filter_by_liquidity(&self, pairs: Vec<PairInfo>, token_address: &str) -> Vec<PairInfo> {
         if pairs.is_empty() {
             return pairs;
@@ -110,8 +111,9 @@ impl<M: Middleware + 'static> PairFinder<M> {
             }
         };
         
-        // Filter pairs by liquidity
-        let mut filtered_pairs = Vec::new();
+        // Categorize pairs by liquidity verification status
+        let mut verified_sufficient = Vec::new();
+        let mut unverified = Vec::new();
         
         for pair in pairs {
             let pair_addr_str = format!("{:?}", pair.pair_address).to_lowercase();
@@ -121,21 +123,39 @@ impl<M: Middleware + 'static> PairFinder<M> {
                     let pool_type = if pair.is_v3 { "V3" } else { "V2" };
                     log::info!("✅ {} pair {} with {} has sufficient liquidity: ${:.0} USD", 
                         pool_type, &pair_addr_str[..10], pair.base_token_symbol, liquidity_usd);
-                    filtered_pairs.push(pair);
+                    verified_sufficient.push(pair);
                 } else {
                     let pool_type = if pair.is_v3 { "V3" } else { "V2" };
                     log::warn!("❌ Filtered out {} pair {} with {} - insufficient liquidity: ${:.2} USD (min: ${:.0})", 
                         pool_type, &pair_addr_str[..10], pair.base_token_symbol, liquidity_usd, MIN_LIQUIDITY_USD);
+                    // Don't add to any list - skip insufficient liquidity pairs
                 }
             } else {
-                // If we can't get liquidity data, include the pair with a warning
-                log::warn!("⚠️  Could not verify liquidity for pair {} with {}, including anyway", 
-                    &pair_addr_str[..10], pair.base_token_symbol);
-                filtered_pairs.push(pair);
+                // Liquidity couldn't be verified - add to unverified list
+                unverified.push(pair);
             }
         }
         
-        filtered_pairs
+        // Decision logic: only use unverified pairs if no verified sufficient pairs exist
+        if !verified_sufficient.is_empty() {
+            // We have verified sufficient pairs, skip unverified ones
+            for pair in unverified {
+                let pair_addr_str = format!("{:?}", pair.pair_address).to_lowercase();
+                let pool_type = if pair.is_v3 { "V3" } else { "V2" };
+                log::warn!("⚠️  Skipping {} pair {} with {} - liquidity unverified and verified pairs available", 
+                    pool_type, &pair_addr_str[..10], pair.base_token_symbol);
+            }
+            verified_sufficient
+        } else {
+            // No verified sufficient pairs, include unverified as fallback
+            for pair in &unverified {
+                let pair_addr_str = format!("{:?}", pair.pair_address).to_lowercase();
+                let pool_type = if pair.is_v3 { "V3" } else { "V2" };
+                log::warn!("⚠️  Including {} pair {} with {} despite unverified liquidity (no verified alternatives)", 
+                    pool_type, &pair_addr_str[..10], pair.base_token_symbol);
+            }
+            unverified
+        }
     }
 
     async fn find_v2_pairs(&self, token_address: Address, base_tokens: &[(String, Address)]) -> Result<Vec<PairInfo>> {
