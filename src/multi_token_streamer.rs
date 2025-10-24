@@ -132,18 +132,26 @@ where
     /// ```
     pub async fn remove_token(&self, token_address: &str) -> Result<()> {
         let address = Address::from_str(token_address)?;
+        log::info!("🔄 [MULTI_TOKEN_STREAMER] Attempting to remove token {:?}", address);
 
         let cancel_token = {
             let tokens = self.tokens.read().await;
+            let token_exists = tokens.contains_key(&address);
+            log::info!("🔄 [MULTI_TOKEN_STREAMER] Token {:?} exists in map: {}", address, token_exists);
             tokens.get(&address).cloned()
         };
 
         match cancel_token {
             Some(token) => {
+                log::info!("🔄 [MULTI_TOKEN_STREAMER] Cancelling token {:?}", address);
                 token.cancel();
+                log::info!("✅ [MULTI_TOKEN_STREAMER] Token {:?} cancelled successfully", address);
                 Ok(())
             }
-            None => Err(anyhow!("Token {:?} is not being monitored", address)),
+            None => {
+                log::warn!("⚠️ [MULTI_TOKEN_STREAMER] Token {:?} is not being monitored", address);
+                Err(anyhow!("Token {:?} is not being monitored", address))
+            },
         }
     }
 

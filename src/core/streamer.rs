@@ -121,12 +121,12 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                 let cancel_clone = cancel_token.clone();
 
                 tokio::spawn(async move {
-                    log::info!("🔄 [SWAP_STREAMER] Starting {} subscription for pair {:?}", pool_type, pair_info_clone.pair_address);
+                    log::info!("🔄 [SWAP_STREAMER] Starting {} subscription for pair {:?} with topic {:?}", pool_type, pair_info_clone.pair_address, swap_topic);
                     
                     // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
                     match parser.provider.subscribe_logs(&filter).await {
                         Ok(mut stream) => {
-                            log::info!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?}", pool_type, pair_info_clone.pair_address);
+                            log::info!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?} with swap topic {:?}", pool_type, pair_info_clone.pair_address, swap_topic);
                             
                             let mut events_received = 0;
                             let mut events_parsed = 0;
@@ -193,7 +193,11 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                                     }
                                                     Err(e) => {
                                                         events_failed += 1;
-                                                        log::error!("❌ [SWAP_STREAMER] Failed to parse {} swap event: {}", pool_type, e);
+                                                        log::error!("❌ [SWAP_STREAMER] Failed to parse {} swap event from pair {:?}: {}", pool_type, pair_info_clone.pair_address, e);
+                                                        log::error!("   Event details - tx: {:?}, topics: {}, data_len: {}", log.transaction_hash, log.topics.len(), log.data.len());
+                                                        if events_failed <= 3 {
+                                                            log::error!("   First few failures - Topics: {:?}", log.topics);
+                                                        }
                                                     }
                                                 }
                                             }
