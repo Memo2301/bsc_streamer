@@ -373,6 +373,10 @@ impl<M: Middleware + 'static> SwapParser<M> {
 
         // Get token info
         let token_info = self.token_cache.get_token_info(token_address).await?;
+        
+        // 🔥 FIX: Detect quote token for Four.meme bonding curve tokens
+        // This allows proper price conversion for stablecoin-based tokens
+        let (quote_token_address, quote_token_symbol) = self.detect_fourmeme_quote_token(token_address).await;
 
         // Get transaction to extract BNB amount
         let bnb_amount = if trade_type == TradeType::Buy {
@@ -510,21 +514,52 @@ impl<M: Middleware + 'static> SwapParser<M> {
                 decimals: token_info.decimals,
             },
             base_token: TokenInfo {
-                address: Address::zero(), // Native BNB
-                symbol: "BNB".to_string(),
+                address: quote_token_address,
+                symbol: quote_token_symbol.clone(),
                 amount: bnb_amount_str,
                 decimals: 18,
             },
             price: PriceInfo {
                 value: price,
-                display: format!("{:.12} BNB", price),
-                base_token: "BNB".to_string(),
+                display: format!("{:.12} {}", price, quote_token_symbol),
+                base_token: quote_token_symbol,
             },
             sender: from,
             recipient: to,
             pair_address: None,
             bonding_curve_address: Some(bonding_curve_address),
         }))
+    }
+    
+    /// Detect the quote token (BNB or stablecoin) for a Four.meme token
+    /// Returns (address, symbol)
+    async fn detect_fourmeme_quote_token(&self, token_address: Address) -> (Address, String) {
+        // Query DexScreener to get the quote token for this Four.meme token
+        let token_addr_str = format!("{:?}", token_address);
+        let url = format!("https://api.dexscreener.com/latest/dex/tokens/{}", token_addr_str);
+        
+        match reqwest::get(&url).await {
+            Ok(response) => {
+                if let Ok(data) = response.json::<serde_json::Value>().await {
+                    if let Some(pairs) = data["pairs"].as_array() {
+                        if let Some(first_pair) = pairs.first() {
+                            if let Some(quote_addr) = first_pair["quoteToken"]["address"].as_str() {
+                                if let Some(quote_symbol) = first_pair["quoteToken"]["symbol"].as_str() {
+                                    // Parse the quote token address
+                                    if let Ok(addr) = quote_addr.parse::<Address>() {
+                                        return (addr, quote_symbol.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+        
+        // Default to WBNB if detection fails
+        ("0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c".parse::<Address>().unwrap(), "BNB".to_string())
     }
 }
 

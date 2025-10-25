@@ -95,33 +95,33 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             // Token has DEX pairs - monitor DEX (PancakeSwap V2/V3)
             log::info!("✅ Found {} DEX pair(s) - subscribing to PancakeSwap events", pairs.len());
 
-            self.is_streaming = true;
+        self.is_streaming = true;
 
-            // Wrap callback in Arc once
-            let callback = Arc::new(swap_callback);
+        // Wrap callback in Arc once
+        let callback = Arc::new(swap_callback);
 
-            // Monitor each pair
-            for pair_info in pairs {
-                // Use correct swap topic based on pool type
-                let swap_topic = if pair_info.is_v3 {
-                    H256::from_str(SWAP_V3_TOPIC)?
-                } else {
-                    H256::from_str(SWAP_V2_TOPIC)?
-                };
-                
-                let pool_type = if pair_info.is_v3 { "V3" } else { "V2" };
-                
-                // Watch for new events only (from latest block forward)
-                let filter = Filter::new()
-                    .address(pair_info.pair_address)
-                    .topic0(swap_topic);
+        // Monitor each pair
+        for pair_info in pairs {
+            // Use correct swap topic based on pool type
+            let swap_topic = if pair_info.is_v3 {
+                H256::from_str(SWAP_V3_TOPIC)?
+            } else {
+                H256::from_str(SWAP_V2_TOPIC)?
+            };
+            
+            let pool_type = if pair_info.is_v3 { "V3" } else { "V2" };
+            
+            // Watch for new events only (from latest block forward)
+            let filter = Filter::new()
+                .address(pair_info.pair_address)
+                .topic0(swap_topic);
 
-                let parser = self.swap_parser.clone();
-                let pair_info_clone = pair_info.clone();
-                let callback_clone = callback.clone();
+            let parser = self.swap_parser.clone();
+            let pair_info_clone = pair_info.clone();
+            let callback_clone = callback.clone();
                 let cancel_clone = cancel_token.clone();
 
-                tokio::spawn(async move {
+            tokio::spawn(async move {
                     log::info!("🔄 [SWAP_STREAMER] Starting {} subscription for pair {:?} with topic {:?}", pool_type, pair_info_clone.pair_address, swap_topic);
                     
                     // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
@@ -174,8 +174,8 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                                     pool_type, events_received, pair_info_clone.pair_address, log.transaction_hash);
                                                 
                                                 let parse_start = std::time::Instant::now();
-                                                match parser.parse_swap_event(&log, &pair_info_clone).await {
-                                                    Ok(swap) => {
+                            match parser.parse_swap_event(&log, &pair_info_clone).await {
+                                Ok(swap) => {
                                                         events_parsed += 1;
                                                         let parse_duration = parse_start.elapsed();
                                                         log::debug!("✅ [SWAP_STREAMER] Parsed {} event #{} in {:?}: {:?} {} @ {:.10} {}", 
@@ -183,7 +183,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                                             swap.price.value, swap.price.base_token);
                                                         
                                                         let callback_start = std::time::Instant::now();
-                                                        callback_clone(swap);
+                                    callback_clone(swap);
                                                         let callback_duration = callback_start.elapsed();
                                                         
                                                         let total_duration = receive_time.elapsed();
@@ -191,8 +191,8 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                                             log::warn!("⚠️  [SWAP_STREAMER] Slow event processing: parse={:?}, callback={:?}, total={:?}", 
                                                                 parse_duration, callback_duration, total_duration);
                                                         }
-                                                    }
-                                                    Err(e) => {
+                                }
+                                Err(e) => {
                                                         events_failed += 1;
                                                         log::error!("❌ [SWAP_STREAMER] Failed to parse {} swap event from pair {:?}: {}", pool_type, pair_info_clone.pair_address, e);
                                                         log::error!("   Event details - tx: {:?}, topics: {}, data_len: {}", log.transaction_hash, log.topics.len(), log.data.len());
@@ -211,18 +211,18 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                     }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            log::error!("❌ [SWAP_STREAMER] Failed to create {} subscription for pair {:?}: {}", pool_type, pair_info_clone.pair_address, e);
-                            log::error!("   Error details: {:?}", e);
-                        }
                     }
-                });
+                    Err(e) => {
+                        log::error!("❌ [SWAP_STREAMER] Failed to create {} subscription for pair {:?}: {}", pool_type, pair_info_clone.pair_address, e);
+                        log::error!("   Error details: {:?}", e);
+                    }
+                }
+            });
 
-                log::debug!("  ✅ Listening to {} {} pair: {:?}", pool_type, pair_info.base_token_symbol, pair_info.pair_address);
-            }
+            log::debug!("  ✅ Listening to {} {} pair: {:?}", pool_type, pair_info.base_token_symbol, pair_info.pair_address);
+        }
 
-            log::debug!("✨ Streamer is now active. Waiting for swap events...");
+        log::debug!("✨ Streamer is now active. Waiting for swap events...");
 
             return Ok(());
         }
@@ -292,35 +292,35 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                 
                 // Fallback: Check recent Transfer events (much faster with only 100 blocks)
                 let transfer_topic = H256::from_str(TRANSFER_TOPIC)?;
-                let filter = Filter::new()
-                    .address(*token_address)
-                    .topic0(transfer_topic)
-                    .from_block(from_block)
-                    .to_block(current_block);
+        let filter = Filter::new()
+            .address(*token_address)
+            .topic0(transfer_topic)
+            .from_block(from_block)
+            .to_block(current_block);
 
                 match self.provider.get_logs(&filter).await {
                     Ok(logs) => {
                         log::info!("🔍 [BONDING_CURVE] Found {} Transfer events in last 100 blocks", logs.len());
-                        
-                        // Check if any transfers involve the bonding curve
-                        for log in logs.iter().take(50) {
-                            if log.topics.len() >= 3 {
-                                let from = Address::from(log.topics[1]);
-                                let to = Address::from(log.topics[2]);
 
-                                if from == bonding_curve || to == bonding_curve {
+        // Check if any transfers involve the bonding curve
+        for log in logs.iter().take(50) {
+            if log.topics.len() >= 3 {
+                let from = Address::from(log.topics[1]);
+                let to = Address::from(log.topics[2]);
+
+                if from == bonding_curve || to == bonding_curve {
                                     log::info!("✅ [BONDING_CURVE] Found Four.meme bonding curve activity in recent transfers");
-                                    return Ok(true);
-                                }
-                            }
-                        }
+                    return Ok(true);
+                }
+            }
+        }
 
                         log::warn!("⚠️ [BONDING_CURVE] No bonding curve activity found in {} recent Transfer events", logs.len());
                         Ok(false)
                     }
                     Err(e) => {
                         log::error!("❌ [BONDING_CURVE] Failed to fetch Transfer logs: {}", e);
-                        Ok(false)
+        Ok(false)
                     }
                 }
             }
@@ -403,11 +403,11 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                     Some(log) => {
                                         events_received += 1;
                                         
-                                        if log.topics.len() >= 3 {
-                                            let from = Address::from(log.topics[1]);
-                                            let to = Address::from(log.topics[2]);
+                    if log.topics.len() >= 3 {
+                        let from = Address::from(log.topics[1]);
+                        let to = Address::from(log.topics[2]);
 
-                                            if from == bonding_curve || to == bonding_curve {
+                        if from == bonding_curve || to == bonding_curve {
                                                 events_filtered += 1;
                                                 log::debug!("📥 [BONDING_CURVE] Event #{}: Transfer involving bonding curve - tx: {:?}", 
                                                     events_filtered, log.transaction_hash);
@@ -417,7 +417,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                                         events_parsed += 1;
                                                         log::info!("✅ [BONDING_CURVE] Parsed swap #{}: {} tokens at {} {}", 
                                                             events_parsed, swap.token.amount, swap.price.value, swap.price.base_token);
-                                                        callback_clone(swap);
+                                callback_clone(swap);
                                                     }
                                                     Ok(None) => {
                                                         log::debug!("⏭️ [BONDING_CURVE] Transfer not a valid swap event");
@@ -470,19 +470,19 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                         log_option = stream.next() => {
                             match log_option {
                                 Some(log) => {
-                                    if log.topics.len() >= 3 {
-                                        let token0 = Address::from(log.topics[1]);
-                                        let token1 = Address::from(log.topics[2]);
-                                        
-                                        // Check if either token matches our target token
-                                        if token0 == token_address || token1 == token_address {
-                                            log::info!("🎉 MIGRATION DETECTED! PairCreated event received!");
-                                            log::info!("🔄 Switching from bonding curve to DEX monitoring...");
-                                            
-                                            // Send transaction hash and block number for migration event
-                                            if let (Some(tx_hash), Some(block_num)) = (log.transaction_hash, log.block_number) {
-                                                let _ = migration_tx.send((tx_hash, block_num.as_u64())).await;
-                                                break;
+                    if log.topics.len() >= 3 {
+                        let token0 = Address::from(log.topics[1]);
+                        let token1 = Address::from(log.topics[2]);
+                        
+                        // Check if either token matches our target token
+                        if token0 == token_address || token1 == token_address {
+                            log::info!("🎉 MIGRATION DETECTED! PairCreated event received!");
+                            log::info!("🔄 Switching from bonding curve to DEX monitoring...");
+                            
+                            // Send transaction hash and block number for migration event
+                            if let (Some(tx_hash), Some(block_num)) = (log.transaction_hash, log.block_number) {
+                                let _ = migration_tx.send((tx_hash, block_num.as_u64())).await;
+                                break;
                                             }
                                         }
                                     }
@@ -573,8 +573,8 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                     log_option = stream.next() => {
                                         match log_option {
                                             Some(log) => {
-                                                if let Ok(swap) = parser_clone.parse_swap_event(&log, &pair_info_clone).await {
-                                                    callback_clone(swap);
+                                if let Ok(swap) = parser_clone.parse_swap_event(&log, &pair_info_clone).await {
+                                    callback_clone(swap);
                                                 }
                                             }
                                             None => {
