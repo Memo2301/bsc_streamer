@@ -228,11 +228,11 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         }
 
         // No DEX pairs found - check if token is on Four.meme bonding curve
-        log::info!("🔍 No DEX pairs found - checking Four.meme bonding curve...");
+        log::debug!("🔍 No DEX pairs found - checking Four.meme bonding curve...");
         
         if let Ok(has_activity) = self.check_bonding_curve(&token_address).await {
             if has_activity {
-                log::info!("✅ Token is on Four.meme bonding curve - subscribing to bonding curve events");
+                log::debug!("✅ Token is on Four.meme bonding curve - subscribing to bonding curve events");
                 self.is_streaming = true;
                 self.start_bonding_curve_with_migration_detection_and_callback(
                     token_address,
@@ -257,14 +257,14 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
 
     async fn check_bonding_curve(&self, token_address: &Address) -> Result<bool> {
         let bonding_curve = get_bonding_curve_address();
-        log::info!("🔍 [BONDING_CURVE] Checking for Four.meme activity - Bonding Curve: {:?}", bonding_curve);
+        log::debug!("🔍 [BONDING_CURVE] Checking for Four.meme activity - Bonding Curve: {:?}", bonding_curve);
 
         // OPTIMIZED: Check only the last 100 blocks (much more efficient than 5000)
         // This is enough to detect recent activity since Four.meme tokens are actively traded
         let current_block = self.provider.get_block_number().await?;
         let from_block = current_block.saturating_sub(U64::from(100));
 
-        log::info!("🔍 [BONDING_CURVE] Scanning last 100 blocks ({} to {})", from_block, current_block);
+        log::debug!("🔍 [BONDING_CURVE] Scanning last 100 blocks ({} to {})", from_block, current_block);
 
         // Query token balance on bonding curve contract
         // If balance > 0, token is still on bonding curve
@@ -280,7 +280,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
             .await
         {
             Ok(balance) if balance > ethers::types::U256::zero() => {
-                log::info!("✅ [BONDING_CURVE] Token has balance on bonding curve: {} tokens", balance);
+                log::debug!("✅ [BONDING_CURVE] Token has balance on bonding curve: {} tokens", balance);
                 return Ok(true);
             }
             Ok(_) => {
@@ -364,12 +364,12 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
         let callback_clone = swap_callback.clone();
         let cancel_clone = cancel_token.clone();
         tokio::spawn(async move {
-            log::info!("🔄 [BONDING_CURVE] Creating subscription for Transfer events on token {:?}", token_address);
+            log::debug!("🔄 [BONDING_CURVE] Creating subscription for Transfer events on token {:?}", token_address);
             
             // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
             match parser.provider.subscribe_logs(&transfer_filter).await {
                 Ok(mut stream) => {
-                    log::info!("✅ [BONDING_CURVE] Transfer subscription created successfully for token {:?}", token_address);
+                    log::debug!("✅ [BONDING_CURVE] Transfer subscription created successfully for token {:?}", token_address);
                     
                     let mut events_received = 0;
                     let mut events_parsed = 0;
@@ -387,14 +387,14 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                 0.0
                             };
                             
-                            log::info!("💓 [BONDING_CURVE] Token {:?} - Received: {}, Bonding Curve: {}, Parsed: {}, Rate: {:.2}/s", 
+                            log::debug!("💓 [BONDING_CURVE] Token {:?} - Received: {}, Bonding Curve: {}, Parsed: {}, Rate: {:.2}/s", 
                                 token_address, events_received, events_filtered, events_parsed, rate);
                             last_log_time = std::time::Instant::now();
                         }
                         
                         tokio::select! {
                             _ = cancel_clone.cancelled() => {
-                                log::info!("🛑 [BONDING_CURVE] Transfer listener cancelled - Received: {}, Bonding Curve: {}, Parsed: {}", 
+                                log::debug!("🛑 [BONDING_CURVE] Transfer listener cancelled - Received: {}, Bonding Curve: {}, Parsed: {}", 
                                     events_received, events_filtered, events_parsed);
                                 break;
                             }
@@ -415,7 +415,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                                 match parser.parse_bonding_curve_event(&log, token_address, bonding_curve).await {
                                                     Ok(Some(swap)) => {
                                                         events_parsed += 1;
-                                                        log::info!("✅ [BONDING_CURVE] Parsed swap #{}: {} tokens at {} {}", 
+                                                        log::debug!("✅ [BONDING_CURVE] Parsed swap #{}: {} tokens at {} {}", 
                                                             events_parsed, swap.token.amount, swap.price.value, swap.price.base_token);
                                 callback_clone(swap);
                                                     }
