@@ -122,12 +122,12 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                 let cancel_clone = cancel_token.clone();
 
             tokio::spawn(async move {
-                    log::info!("🔄 [SWAP_STREAMER] Starting {} subscription for pair {:?} with topic {:?}", pool_type, pair_info_clone.pair_address, swap_topic);
+                    log::debug!("🔄 [SWAP_STREAMER] Starting {} subscription for pair {:?} with topic {:?}", pool_type, pair_info_clone.pair_address, swap_topic);
                     
                     // Use subscribe_logs for WebSocket providers (eth_subscribe instead of polling)
                     match parser.provider.subscribe_logs(&filter).await {
                         Ok(mut stream) => {
-                            log::info!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?} with swap topic {:?}", pool_type, pair_info_clone.pair_address, swap_topic);
+                            log::debug!("✅ [SWAP_STREAMER] {} subscription created successfully for pair {:?} with swap topic {:?}", pool_type, pair_info_clone.pair_address, swap_topic);
                             
                             let mut events_received = 0;
                             let mut events_parsed = 0;
@@ -145,7 +145,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                         0.0
                                     };
                                     
-                                    log::info!("💓 [SWAP_STREAMER] {} pair {:?} - Received: {}, Parsed: {}, Failed: {}, Rate: {:.2}/s", 
+                                    log::debug!("💓 [SWAP_STREAMER] {} pair {:?} - Received: {}, Parsed: {}, Failed: {}, Rate: {:.2}/s", 
                                         pool_type, pair_info_clone.pair_address, events_received, events_parsed, events_failed, rate);
                                     last_log_time = std::time::Instant::now();
                                 }
@@ -166,7 +166,7 @@ impl<M: Middleware + 'static> SwapStreamer<M> {
                                                 
                                                 // Log block number to detect batching
                                                 if events_received == 1 || events_received % 100 == 0 {
-                                                    log::info!("📊 [SWAP_STREAMER] Event #{}: block={:?}, tx={:?}", 
+                                                    log::debug!("📊 [SWAP_STREAMER] Event #{}: block={:?}, tx={:?}", 
                                                         events_received, log.block_number, log.transaction_hash);
                                                 }
                                                 
